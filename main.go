@@ -265,6 +265,8 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 			responseWriter.Write([]byte(err.Error()))
 		}
 
+		responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(modBody)))
+
 		if _, err := responseWriter.Write(modBody); err != nil {
 			responseWriter.WriteHeader(500)
 			responseWriter.Write([]byte(err.Error()))
