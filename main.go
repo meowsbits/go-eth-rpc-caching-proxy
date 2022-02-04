@@ -151,8 +151,6 @@ func requestToJSONRPC(request *http.Request) (*jsonrpcMessage, error) {
 		return nil, err
 	}
 	request.Body = io.NopCloser(bytes.NewReader(body))
-	request.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	request.ContentLength = int64(len(body))
 
 	msg := &jsonrpcMessage{}
 	err = json.Unmarshal(body, msg)
