@@ -39,19 +39,23 @@ import (
 const defaultCacheExpiration = 1 * time.Second
 const defaultCacheExpirationLong = 60 * time.Second
 
-var c *cache.Cache
+// Create a cache with a default expiration time of 5 minutes, and which
+// purges expired items every 10 minutes
+var c = cache.New(defaultCacheExpiration, 1*time.Second)
+
 var remote *url.URL
 
-func init() {
-	// Create a cache with a default expiration time of 5 minutes, and which
-	// purges expired items every 10 minutes
-	c = cache.New(defaultCacheExpiration, 1*time.Second)
+func mustInitOrigin() {
 	var err error
 	origin := os.Getenv("ORIGIN_URL")
 	remote, err = url.Parse(origin)
 	if err != nil {
 		panic(err)
 	}
+}
+
+func init() {
+	mustInitOrigin()
 }
 
 func main() {
@@ -240,7 +244,19 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 			return
 		}
 
-		if err := cachedResponse.Write(responseWriter); err != nil {
+		body, err := io.ReadAll(cachedResponse.Body)
+		if err != nil {
+			responseWriter.WriteHeader(500)
+			responseWriter.Write([]byte("missing cached body for request [princess]"))
+			return
+		}
+		cachedResponse.Body.Close()
+
+		responseWriter.Header().Set("Content-Type", cachedResponse.Header.Get("Content-Type"))
+		responseWriter.Header().Set("Cache-Control", cachedResponse.Header.Get("Cache-Control"))
+		responseWriter.Header().Set("Date", cachedResponse.Header.Get("Date"))
+		responseWriter.Header().Set("Vary", cachedResponse.Header.Get("Vary"))
+		if _, err := responseWriter.Write(body); err != nil {
 			responseWriter.WriteHeader(500)
 			responseWriter.Write([]byte(err.Error()))
 			return

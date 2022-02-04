@@ -66,15 +66,15 @@ func TestIndexHandler(t *testing.T) {
 				http.StatusOK,
 			)
 		} else {
-			// msg, err := responseToJSONRPC(rr.Result())
-			// if err != nil {
-			// 	t.Fatal(err)
-			// }
-			//
-			// if !bytes.Equal(d.ID, msg.ID) {
-			// 	t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
-			// }
-			//
+			msg, err := responseToJSONRPC(rr.Result())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(d.ID, msg.ID) {
+				t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
+			}
+
 			dump, err := httputil.DumpResponse(rr.Result(), true)
 			if err != nil {
 				t.Errorf("dump error: %v", err)
@@ -131,15 +131,15 @@ func TestIndexHandler2(t *testing.T) {
 				http.StatusOK,
 			)
 		} else {
-			// msg, err := responseToJSONRPC(rr.Result())
-			// if err != nil {
-			// 	t.Fatal(err)
-			// }
-			//
-			// if !bytes.Equal(d.ID, msg.ID) {
-			// 	t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
-			// }
-			//
+			msg, err := responseToJSONRPC(rr.Result())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(d.ID, msg.ID) {
+				t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
+			}
+
 			dump, err := httputil.DumpResponse(rr.Result(), true)
 			if err != nil {
 				t.Errorf("dump error: %v", err)
@@ -196,15 +196,15 @@ func TestIndexHandlerError(t *testing.T) {
 				http.StatusOK,
 			)
 		} else {
-			// msg, err := responseToJSONRPC(rr.Result())
-			// if err != nil {
-			// 	t.Fatal(err)
-			// }
-			//
-			// if !bytes.Equal(d.ID, msg.ID) {
-			// 	t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
-			// }
-			//
+			msg, err := responseToJSONRPC(rr.Result())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(d.ID, msg.ID) {
+				t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
+			}
+
 			dump, err := httputil.DumpResponse(rr.Result(), true)
 			if err != nil {
 				t.Errorf("dump error: %v", err)
