@@ -236,6 +236,10 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 		cachedResponseBodyBytes := cachedResponseBody.([]byte)
 		cachedResponse.Body = io.NopCloser(bytes.NewReader(cachedResponseBodyBytes))
 
+		for k := range cachedResponse.Header {
+			responseWriter.Header().Set(k, cachedResponse.Header.Get(k))
+		}
+
 		// Modify the cachedResponse value's 'id' field,
 		// setting content length as required.
 		if err := replaceResponseID(msg, cachedResponse); err != nil {
@@ -252,10 +256,6 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 		}
 		cachedResponse.Body.Close()
 
-		responseWriter.Header().Set("Content-Type", cachedResponse.Header.Get("Content-Type"))
-		responseWriter.Header().Set("Cache-Control", cachedResponse.Header.Get("Cache-Control"))
-		responseWriter.Header().Set("Date", cachedResponse.Header.Get("Date"))
-		responseWriter.Header().Set("Vary", cachedResponse.Header.Get("Vary"))
 		if _, err := responseWriter.Write(body); err != nil {
 			responseWriter.WriteHeader(500)
 			responseWriter.Write([]byte(err.Error()))
