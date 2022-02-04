@@ -191,6 +191,24 @@ func replaceResponseID(originalMsg *jsonrpcMessage, response *http.Response) err
 	return nil
 }
 
+// replaceID uses the id from bodyA in bodyB
+func replaceID(msg *jsonrpcMessage, body []byte) (modifiedBody []byte, err error) {
+	bodyMsgB := &jsonrpcMessage{}
+	err = json.Unmarshal(body, bodyMsgB)
+	if err != nil {
+		return nil, err
+	}
+
+	// Match up the original request and the cached response call IDs.
+	bodyMsgB.ID = msg.ID
+
+	modifiedBody, err = json.Marshal(bodyMsgB)
+	if err != nil {
+		return nil, err
+	}
+	return modifiedBody, nil
+}
+
 // [START handler]
 
 // handler responds to requests.
@@ -242,21 +260,13 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 
 		// Modify the cachedResponse value's 'id' field,
 		// setting content length as required.
-		if err := replaceResponseID(msg, cachedResponse); err != nil {
-			responseWriter.WriteHeader(500)
-			responseWriter.Write([]byte("replace id " + err.Error()))
-			return
-		}
-
-		body, err := io.ReadAll(cachedResponse.Body)
+		modBody, err := replaceID(msg, cachedResponseBodyBytes)
 		if err != nil {
 			responseWriter.WriteHeader(500)
-			responseWriter.Write([]byte("missing cached body for request [princess]"))
-			return
+			responseWriter.Write([]byte(err.Error()))
 		}
-		cachedResponse.Body.Close()
 
-		if _, err := responseWriter.Write(body); err != nil {
+		if _, err := responseWriter.Write(modBody); err != nil {
 			responseWriter.WriteHeader(500)
 			responseWriter.Write([]byte(err.Error()))
 			return
