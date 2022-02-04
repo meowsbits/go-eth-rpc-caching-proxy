@@ -252,7 +252,6 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 			return
 		}
 		cachedResponseBodyBytes := cachedResponseBody.([]byte)
-		cachedResponse.Body = io.NopCloser(bytes.NewReader(cachedResponseBodyBytes))
 
 		for k := range cachedResponse.Header {
 			responseWriter.Header().Set(k, cachedResponse.Header.Get(k))
