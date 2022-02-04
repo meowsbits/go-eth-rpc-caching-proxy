@@ -239,18 +239,13 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	v, cacheHit := c.Get(key)
-	if cacheHit {
+	// Run both gets, and confirm that they BOTH succeed.
+	cachedResponseV, cacheHit := c.Get(key)
+	cachedResponseBody, ok := c.Get(key + "body")
+	if cacheHit && ok {
 		log.Printf("CACHE: hit / key=%v", key)
 
-		cachedResponse := v.(*http.Response)
-		cachedResponseBody, ok := c.Get(key + "body")
-		if !ok {
-			// Handle hopefully-impossible case where the cache does not have the info.
-			responseWriter.WriteHeader(500)
-			responseWriter.Write([]byte("missing cached body for request"))
-			return
-		}
+		cachedResponse := cachedResponseV.(*http.Response)
 		cachedResponseBodyBytes := cachedResponseBody.([]byte)
 
 		for k := range cachedResponse.Header {
