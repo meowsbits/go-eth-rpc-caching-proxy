@@ -1,40 +1,18 @@
-// Copyright 2019 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     https://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-// [START gae_go111_app]
-
-// Sample helloworld is an App Engine app.
 package main
 
-// [START import]
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/patrickmn/go-cache"
 )
-
-// [END import]
-// [START main_func]
 
 const defaultCacheExpiration = 1 * time.Second
 const defaultCacheExpirationLong = 60 * time.Second
@@ -43,7 +21,62 @@ const defaultCacheExpirationLong = 60 * time.Second
 // purges expired items every 10 minutes
 var c = cache.New(defaultCacheExpiration, 1*time.Second)
 
+// remote is the parsed form of the global app setting of the proxy origin.
 var remote *url.URL
+
+type requestMsgValidation struct {
+	fn func(message *jsonrpcMessage) (int, string)
+}
+
+var requestValidations = []requestMsgValidation{
+	{
+		fn: func(message *jsonrpcMessage) (int, string) {
+			if !message.isCall() {
+				return defaultErrorCode, "request be valid JSON-RPC Call, must have 'method' annotation"
+			}
+			return 0, ""
+		},
+	},
+	{
+		fn: func(message *jsonrpcMessage) (int, string) {
+			if message.isNotification() {
+				return defaultErrorCode, "request must have 'id' annotation"
+			}
+			return 0, ""
+		},
+	},
+	{
+		fn: func(message *jsonrpcMessage) (int, string) {
+			if message.isSubscribe() || message.isUnsubscribe() {
+				return defaultErrorCode, "server does not support pubsub services"
+			}
+			return 0, ""
+		},
+	},
+	{
+		fn: func(message *jsonrpcMessage) (int, string) {
+			if message.isSubscribe() || message.isUnsubscribe() {
+				return defaultErrorCode, "server does not support pubsub services"
+			}
+			return 0, ""
+		},
+	},
+	{
+		fn: func(message *jsonrpcMessage) (int, string) {
+			for _, r := range []*regexp.Regexp{
+				regexp.MustCompile(`^admin`),
+				regexp.MustCompile(`^personal`),
+				regexp.MustCompile(`^debug`),
+				regexp.MustCompile(`^miner`),
+			} {
+				if r.MatchString(message.Method) {
+					return -32601, fmt.Sprintf("the method %s does not exist/is not available", message.Method)
+				}
+			}
+			return 0, ""
+		},
+	},
+}
 
 func mustInitOrigin() {
 	var err error
@@ -76,8 +109,16 @@ func main() {
 	// [END setting_port]
 }
 
-// [END main_func]
+// getCacheDuration decides how long a response to a request should be cached for.
+func getCacheDuration(request, response *jsonrpcMessage) time.Duration {
+	if response.isError() {
+		return defaultCacheExpirationLong
+	}
+	return defaultCacheExpiration
+}
 
+// proxyCacheResponse is the moneymaker.
+// It is the only function that has access to both a request and associated response.
 func proxyCacheResponse(request *jsonrpcMessage) func(*http.Response) error {
 	return func(response *http.Response) error {
 		key, err := request.cacheKey()
@@ -85,129 +126,54 @@ func proxyCacheResponse(request *jsonrpcMessage) func(*http.Response) error {
 			return err
 		}
 
-		ttl := defaultCacheExpiration
-
 		msg, err := responseToJSONRPC(response)
 		if err != nil {
 			return err
 		}
-		if msg.Error != nil {
-			ttl = defaultCacheExpirationLong
-		}
+
+		ttl := getCacheDuration(request, msg)
+
+		// Augment the response header with the cache values.
+		// The client should have a clue about how we're rolling.
+		response.Header.Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
+			ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
 
 		// Cache the response.
 		c.Set(key, response, ttl)
+		c.Set(key+"msg", msg, ttl)
 
-		// But the Body ReadCloser doesn't get stored.
-		// We need to cache the body as text.
-		body, err := io.ReadAll(response.Body)
-		if err != nil {
-			return err
-		}
-		if err := response.Body.Close(); err != nil {
-			return err
-		}
-		response.Body = io.NopCloser(bytes.NewReader(body))
-		response.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		response.ContentLength = int64(len(body))
-
-		c.Set(key+"body", body, ttl)
-
-		response.Header.Set("Cache-Control", "public, s-maxage=1, max-age=1")
 		return nil
 	}
 }
 
-func responseToJSONRPC(response *http.Response) (*jsonrpcMessage, error) {
-	// Capture the body so we can safely read it,
-	// and then reinstall it.
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, err
+// asMsgValidatingWriting validates and reads the request into a *jsonrpcMessage and validates app-arbitrary conditions.
+func asMsgValidatingWriting(responseWriter http.ResponseWriter, request *http.Request) *jsonrpcMessage {
+	if request.Method != "POST" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		responseWriter.Write([]byte("invalid method: method must be POST, you sent a " + request.Method))
+		return nil
 	}
-	if err := response.Body.Close(); err != nil {
-		return nil, err
+	msg, e := requestToJSONRPC(request)
+	if e != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		responseWriter.Write([]byte(e.Error()))
+		return nil
 	}
-	response.Body = io.NopCloser(bytes.NewReader(body))
-	response.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	response.ContentLength = int64(len(body))
 
-	msg := &jsonrpcMessage{}
-	err = json.Unmarshal(body, msg)
-	if err != nil {
-		return nil, err
+	var err error
+	for _, v := range requestValidations {
+		if ec, errStr := v.fn(msg); ec != 0 {
+			err = errors.New(errStr)
+			responseWriter.WriteHeader(http.StatusBadRequest)
+			errMsg := errorMessage(err)
+			errMsg.Error.Code = ec
+			responseWriter.Write(errMsg.mustJSONBytes())
+			return nil
+		}
 	}
-	return msg, nil
+
+	return msg
 }
-
-func requestToJSONRPC(request *http.Request) (*jsonrpcMessage, error) {
-	// Capture the body so we can safely read it,
-	// and then reinstall it.
-	body, err := io.ReadAll(request.Body)
-	if err != nil {
-		return nil, err
-	}
-	if err := request.Body.Close(); err != nil {
-		return nil, err
-	}
-	request.Body = io.NopCloser(bytes.NewReader(body))
-
-	msg := &jsonrpcMessage{}
-	err = json.Unmarshal(body, msg)
-	if err != nil {
-		return nil, err
-	}
-	return msg, nil
-}
-
-func replaceResponseID(originalMsg *jsonrpcMessage, response *http.Response) error {
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return err
-	}
-	if err := response.Body.Close(); err != nil {
-		return err
-	}
-
-	bodyMsg := &jsonrpcMessage{}
-	err = json.Unmarshal(body, bodyMsg)
-	if err != nil {
-		return err
-	}
-	// Match up the original request and the cached response call IDs.
-	bodyMsg.ID = originalMsg.ID
-
-	responseBody, err := json.Marshal(bodyMsg)
-	if err != nil {
-		return err
-	}
-
-	response.Body = io.NopCloser(bytes.NewReader(responseBody))
-	response.Header.Set("Content-Length", fmt.Sprintf("%d", len(responseBody)))
-	response.ContentLength = int64(len(responseBody))
-
-	return nil
-}
-
-// replaceID uses the id from bodyA in bodyB
-func replaceID(msg *jsonrpcMessage, body []byte) (modifiedBody []byte, err error) {
-	bodyMsgB := &jsonrpcMessage{}
-	err = json.Unmarshal(body, bodyMsgB)
-	if err != nil {
-		return nil, err
-	}
-
-	// Match up the original request and the cached response call IDs.
-	bodyMsgB.ID = msg.ID
-
-	modifiedBody, err = json.Marshal(bodyMsgB)
-	if err != nil {
-		return nil, err
-	}
-	return modifiedBody, nil
-}
-
-// [START handler]
 
 // handler responds to requests.
 func handler(responseWriter http.ResponseWriter, request *http.Request) {
@@ -216,35 +182,27 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 	// log.Printf("Handler took: %v", time.Since(start))
 	// }()
 
-	if request.Method != "POST" {
-		responseWriter.Write([]byte("invalid method: method must be POST"))
-		responseWriter.WriteHeader(400)
-		return
-	}
-
-	msg, err := requestToJSONRPC(request)
-	if err != nil {
-		log.Printf("invalid request: error: %v", err)
-		responseWriter.Write([]byte(err.Error()))
-		responseWriter.WriteHeader(400)
+	msg := asMsgValidatingWriting(responseWriter, request)
+	if msg == nil {
 		return
 	}
 
 	key, err := msg.cacheKey()
 	if err != nil {
-		responseWriter.WriteHeader(400)
-		responseWriter.Write([]byte(err.Error()))
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+		errMsg := errorMessage(err)
+		responseWriter.Write(errMsg.mustJSONBytes())
 		return
 	}
 
 	// Run both gets, and confirm that they BOTH succeed.
 	cachedResponseV, cacheHit := c.Get(key)
-	cachedResponseBody, ok := c.Get(key + "body")
-	if cacheHit && ok {
+	cachedResponseMsgV, cacheHit2 := c.Get(key + "msg")
+	if cacheHit && cacheHit2 {
 		log.Printf("CACHE: hit / key=%v", key)
 
 		cachedResponse := cachedResponseV.(*http.Response)
-		cachedResponseBodyBytes := cachedResponseBody.([]byte)
+		cachedResponseMsg := cachedResponseMsgV.(*jsonrpcMessage)
 
 		for k := range cachedResponse.Header {
 			responseWriter.Header().Set(k, cachedResponse.Header.Get(k))
@@ -252,17 +210,18 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 
 		// Modify the cachedResponse value's 'id' field,
 		// setting content length as required.
-		modBody, err := replaceID(msg, cachedResponseBodyBytes)
-		if err != nil {
-			responseWriter.WriteHeader(500)
-			responseWriter.Write([]byte(err.Error()))
-		}
+		m := &jsonrpcMessage{}
+		*m = *cachedResponseMsg
+		m.ID = msg.ID
+
+		modBody := m.mustJSONBytes()
 
 		responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(modBody)))
 
 		if _, err := responseWriter.Write(modBody); err != nil {
-			responseWriter.WriteHeader(500)
-			responseWriter.Write([]byte(err.Error()))
+			responseWriter.WriteHeader(http.StatusInternalServerError)
+			errMsg := errorMessage(err)
+			responseWriter.Write(errMsg.mustJSONBytes())
 			return
 		}
 		return
@@ -286,6 +245,3 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 
 	proxy.ServeHTTP(responseWriter, request)
 }
-
-// [END handler]
-// [END gae_go111_app]

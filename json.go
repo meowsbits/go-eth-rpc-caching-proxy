@@ -1,15 +1,26 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 )
 
 const (
+	vsn = "2.0"
+
 	subscribeMethodSuffix   = "_subscribe"
 	unsubscribeMethodSuffix = "_unsubscribe"
+
+	defaultErrorCode = -32000
+)
+
+var (
+	null = json.RawMessage("null")
 )
 
 // A value of this type can a JSON-RPC request, notification, successful response or
@@ -47,6 +58,32 @@ func (msg *jsonrpcMessage) isUnsubscribe() bool {
 	return strings.HasSuffix(msg.Method, unsubscribeMethodSuffix)
 }
 
+func (msg *jsonrpcMessage) isError() bool {
+	return msg.Error != nil
+}
+
+func (msg *jsonrpcMessage) mustJSONBytes() []byte {
+	b, err := json.Marshal(msg)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func errorMessage(err error) *jsonrpcMessage {
+	msg := &jsonrpcMessage{Version: vsn, ID: null, Error: &jsonError{
+		Code:    defaultErrorCode,
+		Message: err.Error(),
+	}}
+	return msg
+}
+
+func (msg *jsonrpcMessage) errorResponse(err error) *jsonrpcMessage {
+	resp := errorMessage(err)
+	resp.ID = msg.ID
+	return resp
+}
+
 type jsonError struct {
 	Code    int         `json:"code"`
 	Message string      `json:"message"`
@@ -71,10 +108,6 @@ func (err *jsonError) ErrorData() interface{} {
 type params []interface{}
 
 func (msg *jsonrpcMessage) cacheKey() (string, error) {
-	// Validate request.
-	if !msg.isCall() || msg.isNotification() || msg.isSubscribe() || msg.isUnsubscribe() {
-		return "", errors.New("invalid request: must have 'method' field and not be subscription based")
-	}
 	out := msg.Method
 	params := params{}
 	err := json.Unmarshal(msg.Params, &params)
@@ -84,5 +117,45 @@ func (msg *jsonrpcMessage) cacheKey() (string, error) {
 	for _, p := range params {
 		out += fmt.Sprintf("/%v", p)
 	}
-	return out, nil
+	return fmt.Sprintf("%x", sha1.Sum([]byte(out))), nil
+}
+
+func responseToJSONRPC(response *http.Response) (*jsonrpcMessage, error) {
+	// Capture the body so we can safely read it,
+	// and then reinstall it.
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := response.Body.Close(); err != nil {
+		return nil, err
+	}
+	response.Body = io.NopCloser(bytes.NewReader(body))
+
+	msg := &jsonrpcMessage{}
+	err = json.Unmarshal(body, msg)
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
+func requestToJSONRPC(request *http.Request) (*jsonrpcMessage, error) {
+	// Capture the body so we can safely read it,
+	// and then reinstall it.
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := request.Body.Close(); err != nil {
+		return nil, err
+	}
+	request.Body = io.NopCloser(bytes.NewReader(body))
+
+	msg := &jsonrpcMessage{}
+	err = json.Unmarshal(body, msg)
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
 }

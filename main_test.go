@@ -22,33 +22,74 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"net/url"
+	"os/exec"
 	"testing"
 	"time"
 )
 
-func TestIndexHandler(t *testing.T) {
-	runTest := func() {
-		d := jsonrpcMessage{
-			ID:      []byte(fmt.Sprintf("%d", rand.Int())),
-			Version: "2.0",
-			Method:  "eth_blockNumber",
-			Params:  []byte(`[]`),
-		}
+func TestPosts(t *testing.T) {
 
-		b, err := json.Marshal(d)
+	gethCmd := exec.Command("geth", "--dev", "--http", "--http.port", "8545")
+	if err := gethCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer gethCmd.Process.Kill()
+	r, err := url.Parse("http://localhost:8545")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote = r
+
+	type testCase struct {
+		postData     jsonrpcMessage
+		expectStatus int
+	}
+	cases := []testCase{
+		{
+			postData: jsonrpcMessage{
+				ID:      []byte(fmt.Sprintf("%d", rand.Int())),
+				Version: "2.0",
+				Method:  "eth_blockNumber",
+				Params:  []byte(`[]`),
+			},
+			expectStatus: http.StatusOK,
+		},
+		{
+			postData: jsonrpcMessage{
+				ID:      []byte(fmt.Sprintf("%d", rand.Int())),
+				Version: "2.0",
+				Method:  "eth_getBalance",
+				Params:  []byte(`["0xDf7D7e053933b5cC24372f878c90E62dADAD5d42", "latest"]`),
+			},
+			expectStatus: http.StatusOK,
+		},
+		{
+			postData: jsonrpcMessage{
+				ID:      []byte(fmt.Sprintf("%d", rand.Int())),
+				Version: "2.0",
+				Method:  "eth_blockNoop",
+				Params:  []byte(`[]`),
+			},
+			expectStatus: http.StatusOK,
+		},
+	}
+
+	runTest := func(i int, c testCase) {
+		b, err := json.Marshal(c.postData)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatal(i, err)
 		}
 
 		req, err := http.NewRequest("POST", "/", bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 		if err != nil {
-			t.Fatal(err)
+			t.Fatal(i, err)
 		}
 
 		reqDump, err := httputil.DumpRequest(req, true)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatal(i, err)
 		}
 		t.Logf("-> %v", string(reqDump))
 
@@ -57,11 +98,12 @@ func TestIndexHandler(t *testing.T) {
 		handler := http.HandlerFunc(handler)
 		handler.ServeHTTP(rr, req)
 
-		if status := rr.Code; status != http.StatusOK {
+		if status := rr.Code; status != c.expectStatus {
 			dump, _ := httputil.DumpResponse(rr.Result(), true)
-			t.Logf("response: %v", string(dump))
+			t.Logf("<- %v", string(dump))
 			t.Errorf(
-				"unexpected status: got (%v) want (%v)",
+				"case: %d, unexpected status: got (%v) want (%v)",
+				i,
 				status,
 				http.StatusOK,
 			)
@@ -71,8 +113,8 @@ func TestIndexHandler(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if !bytes.Equal(d.ID, msg.ID) {
-				t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
+			if !bytes.Equal(c.postData.ID, msg.ID) {
+				t.Errorf("mismatched ids: request=%v response=%v", string(c.postData.ID), string(msg.ID))
 			}
 
 			dump, err := httputil.DumpResponse(rr.Result(), true)
@@ -84,139 +126,36 @@ func TestIndexHandler(t *testing.T) {
 		}
 	}
 
-	runTest()
-	runTest()
-	time.Sleep(1 * time.Second)
-	runTest()
-	runTest()
+	for i, c := range cases {
+		runTest(i, c)
+		runTest(i, c)
+		time.Sleep(defaultCacheExpiration)
+		runTest(i, c)
+		runTest(i, c)
+	}
 }
 
-func TestIndexHandler2(t *testing.T) {
-	runTest := func() {
-		d := jsonrpcMessage{
-			ID:      []byte(fmt.Sprintf("%d", rand.Int())),
-			Version: "2.0",
-			Method:  "eth_getBalance",
-			Params:  []byte(`["0xDf7D7e053933b5cC24372f878c90E62dADAD5d42", "latest"]`),
-		}
+// TestHandlingMethodType expects that the server handles only POST methods.
+func TestHandlingMethodType(t *testing.T) {
 
-		b, err := json.Marshal(d)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		req, err := http.NewRequest("POST", "/", bytes.NewReader(b))
-		req.Header.Set("Content-Type", "application/json; charset=UTF-8")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		reqDump, err := httputil.DumpRequest(req, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("-> %v", string(reqDump))
-
-		rr := httptest.NewRecorder()
-
-		handler := http.HandlerFunc(handler)
-		handler.ServeHTTP(rr, req)
-
-		if status := rr.Code; status != http.StatusOK {
-			dump, _ := httputil.DumpResponse(rr.Result(), true)
-			t.Logf("response: %v", string(dump))
-			t.Errorf(
-				"unexpected status: got (%v) want (%v)",
-				status,
-				http.StatusOK,
-			)
-		} else {
-			msg, err := responseToJSONRPC(rr.Result())
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			if !bytes.Equal(d.ID, msg.ID) {
-				t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
-			}
-
-			dump, err := httputil.DumpResponse(rr.Result(), true)
-			if err != nil {
-				t.Errorf("dump error: %v", err)
-			}
-			t.Logf("<- %s", string(dump))
-
-		}
+	req, err := http.NewRequest("GET", "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":5577006791947779410,"method":"eth_blockNumber","params":[]}`)))
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	runTest()
-	runTest()
-	time.Sleep(1 * time.Second)
-	runTest()
-	runTest()
-}
+	rr := httptest.NewRecorder()
 
-func TestIndexHandlerError(t *testing.T) {
-	runTest := func() {
-		d := jsonrpcMessage{
-			ID:      []byte(fmt.Sprintf("%d", rand.Int())),
-			Version: "2.0",
-			Method:  "eth_blockNoop",
-			Params:  []byte(`[]`),
-		}
+	handler := http.HandlerFunc(handler)
+	handler.ServeHTTP(rr, req)
 
-		b, err := json.Marshal(d)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		req, err := http.NewRequest("POST", "/", bytes.NewReader(b))
-		req.Header.Set("Content-Type", "application/json; charset=UTF-8")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		reqDump, err := httputil.DumpRequest(req, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("-> %v", string(reqDump))
-
-		rr := httptest.NewRecorder()
-
-		handler := http.HandlerFunc(handler)
-		handler.ServeHTTP(rr, req)
-
-		if status := rr.Code; status != http.StatusOK {
-			dump, _ := httputil.DumpResponse(rr.Result(), true)
-			t.Logf("response: %v", string(dump))
-			t.Errorf(
-				"unexpected status: got (%v) want (%v)",
-				status,
-				http.StatusOK,
-			)
-		} else {
-			msg, err := responseToJSONRPC(rr.Result())
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			if !bytes.Equal(d.ID, msg.ID) {
-				t.Errorf("mismatched ids: request=%v response=%v", string(d.ID), string(msg.ID))
-			}
-
-			dump, err := httputil.DumpResponse(rr.Result(), true)
-			if err != nil {
-				t.Errorf("dump error: %v", err)
-			}
-			t.Logf("<- %s", string(dump))
-
-		}
+	if status := rr.Code; status != http.StatusBadRequest {
+		dump, _ := httputil.DumpResponse(rr.Result(), true)
+		t.Logf("<- %v", string(dump))
+		t.Errorf(
+			"unexpected status: got (%v) want (%v)",
+			status,
+			http.StatusBadRequest,
+		)
 	}
-
-	runTest()
-	runTest()
-	time.Sleep(1 * time.Second)
-	runTest()
-	runTest()
 }
