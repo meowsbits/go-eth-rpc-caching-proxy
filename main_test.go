@@ -206,3 +206,68 @@ func TestBatchRequests(t *testing.T) {
 		)
 	}
 }
+
+// TestHandlingMethodType expects that the server handles only POST methods.
+func TestHandler2(t *testing.T) {
+
+	g := mustStartTestOrigin(t)
+	defer g.Process.Kill()
+
+	req, err := http.NewRequest("POST", "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":5577006791947779410,"method":"eth_blockNumber","params":[]}`)))
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+
+	handler := http.HandlerFunc(handler2)
+	handler.ServeHTTP(rr, req)
+	req.Body.Close()
+
+	reqDump, err := httputil.DumpRequest(req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("-> %v", string(reqDump))
+
+	dump, _ := httputil.DumpResponse(rr.Result(), true)
+	t.Logf("<- %v", string(dump))
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("unexpected status: got (%v) want (%v)", status, http.StatusBadRequest)
+	}
+}
+
+// TestHandlingMethodType expects that the server handles only POST methods.
+func TestHandler22(t *testing.T) {
+
+	g := mustStartTestOrigin(t)
+	defer g.Process.Kill()
+
+	dataStr := `[
+{"jsonrpc":"2.0","id":69,"method":"eth_blockNumber","params":[]},
+{"jsonrpc":"2.0","id":42,"method":"eth_syncing","params":[]}]
+`
+	data := bytes.NewBuffer([]byte(dataStr))
+	req, err := http.NewRequest("POST", "/", data)
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqDump, err := httputil.DumpRequest(req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("-> %v", string(reqDump))
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(handler2)
+	handler.ServeHTTP(rr, req)
+
+	dump, _ := httputil.DumpResponse(rr.Result(), true)
+	t.Logf("<- %v", string(dump))
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("unexpected status: got (%v) want (%v)", status, http.StatusBadRequest)
+	}
+}
