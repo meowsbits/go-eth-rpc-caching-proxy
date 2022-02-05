@@ -159,3 +159,35 @@ func requestToJSONRPC(request *http.Request) (*jsonrpcMessage, error) {
 	}
 	return msg, nil
 }
+
+// parseMessage parses raw bytes as a (batch of) JSON-RPC message(s). There are no error
+// checks in this function because the raw message has already been syntax-checked when it
+// is called. Any non-JSON-RPC messages in the input return the zero value of
+// jsonrpcMessage.
+func parseMessage(raw json.RawMessage) ([]*jsonrpcMessage, bool) {
+	if !isBatch(raw) {
+		msgs := []*jsonrpcMessage{{}}
+		json.Unmarshal(raw, &msgs[0])
+		return msgs, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.Token() // skip '['
+	var msgs []*jsonrpcMessage
+	for dec.More() {
+		msgs = append(msgs, new(jsonrpcMessage))
+		dec.Decode(&msgs[len(msgs)-1])
+	}
+	return msgs, true
+}
+
+// isBatch returns true when the first non-whitespace characters is '['
+func isBatch(raw json.RawMessage) bool {
+	for _, c := range raw {
+		// skip insignificant whitespace (http://www.ietf.org/rfc/rfc4627.txt)
+		if c == 0x20 || c == 0x09 || c == 0x0a || c == 0x0d {
+			continue
+		}
+		return c == '['
+	}
+	return false
+}

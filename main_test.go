@@ -28,18 +28,24 @@ import (
 	"time"
 )
 
-func TestPosts(t *testing.T) {
-
+func mustStartTestOrigin(t *testing.T) *exec.Cmd {
 	gethCmd := exec.Command("geth", "--dev", "--http", "--http.port", "8545")
 	if err := gethCmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer gethCmd.Process.Kill()
+
 	r, err := url.Parse("http://localhost:8545")
 	if err != nil {
 		t.Fatal(err)
 	}
 	remote = r
+
+	return gethCmd
+}
+
+func TestPosts(t *testing.T) {
+	g := mustStartTestOrigin(t)
+	defer g.Process.Kill()
 
 	type testCase struct {
 		postData     jsonrpcMessage
@@ -157,5 +163,54 @@ func TestHandlingMethodType(t *testing.T) {
 			status,
 			http.StatusBadRequest,
 		)
+	}
+}
+
+func TestBatchRequests(t *testing.T) {
+	g := mustStartTestOrigin(t)
+	defer g.Process.Kill()
+
+	msgs := []jsonrpcMessage{
+		{
+			ID:      []byte(fmt.Sprintf("%d", rand.Int())),
+			Version: "2.0",
+			Method:  "eth_getBalance",
+			Params:  []byte(`["0xDf7D7e053933b5cC24372f878c90E62dADAD5d42", "latest"]`),
+		},
+		{
+			ID:      []byte(fmt.Sprintf("%d", rand.Int())),
+			Version: "2.0",
+			Method:  "eth_getBalance",
+			Params:  []byte(`["0xab03e6e7a145f3c67a7eb4e3b40a5bb7d1dd484d", "latest"]`),
+		},
+	}
+
+	b, err := json.Marshal(msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest("POST", "/", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+
+	handler := http.HandlerFunc(handler)
+	handler.ServeHTTP(rr, req)
+
+	if status := rr.Code; status != http.StatusOK {
+		dump, _ := httputil.DumpResponse(rr.Result(), true)
+		t.Logf("<- %v", string(dump))
+		t.Errorf(
+			"unexpected status: got (%v) want (%v)",
+			status,
+			http.StatusBadRequest,
+		)
+	} else {
+		dump, _ := httputil.DumpResponse(rr.Result(), true)
+		t.Logf("<- %v", string(dump))
 	}
 }
