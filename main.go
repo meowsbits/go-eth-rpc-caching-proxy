@@ -134,21 +134,21 @@ func getCacheDuration(request, response *jsonrpcMessage) time.Duration {
 	return defaultCacheExpiration
 }
 
-// proxyCacheResponse is the moneymaker.
+// cacheMsgReqRes is the moneymaker.
 // It is the only function that has access to both a request and associated response.
-func proxyCacheResponse(request *jsonrpcMessage) func(*http.Response) error {
+func cacheMsgReqRes(reqMsg *jsonrpcMessage) func(*http.Response) error {
 	return func(response *http.Response) error {
-		key, err := request.cacheKey()
+		key, err := reqMsg.cacheKey()
 		if err != nil {
 			return err
 		}
 
-		msg, err := responseToJSONRPC(response)
+		resMsg, err := responseToJSONRPC(response)
 		if err != nil {
 			return err
 		}
 
-		ttl := getCacheDuration(request, msg)
+		ttl := getCacheDuration(reqMsg, resMsg)
 
 		// Augment the response header with the cache values.
 		// The client should have a clue about how we're rolling.
@@ -157,27 +157,28 @@ func proxyCacheResponse(request *jsonrpcMessage) func(*http.Response) error {
 
 		// Cache the response.
 		c.Set(key, response, ttl)
-		c.Set(key+"msg", msg, ttl)
+		c.Set(key+"msg", resMsg, ttl)
 
 		return nil
 	}
 }
 
 // asMsgValidatingWriting validates and reads the request into a *jsonrpcMessage and validates app-arbitrary conditions.
-var errUnknownOrNotJSONRPC = errors.New("unable to decode to json rpc message")
+var errRequestUnknownMsgType = errors.New("unable to decode to json rpc message")
+var erRequestNotPOST = errors.New("request method must be POST")
 
 func asMsgValidatingWriting(responseWriter http.ResponseWriter, request *http.Request) (*jsonrpcMessage, error) {
 	if request.Method != "POST" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		responseWriter.Write([]byte("invalid method: method must be POST, you sent a " + request.Method))
-		return nil, errors.New("request method must be POST")
+		return nil, erRequestNotPOST
 	}
 
 	// Since the request may be valid, but unknown encoding or data type (ie. batches),
 	// we need to defer all unprocessable requests to the origin.
 	msg, e := requestToJSONRPC(request)
 	if e != nil {
-		return nil, errUnknownOrNotJSONRPC
+		return nil, errRequestUnknownMsgType
 	}
 
 	// Now we know that the message is a jsonrpcMessage,
@@ -203,7 +204,7 @@ func handleProxy(responseWriter http.ResponseWriter, request *http.Request, msg 
 
 	// We'll inspect and cache the response once it comes back.
 	if msg != nil {
-		proxy.ModifyResponse = proxyCacheResponse(msg)
+		proxy.ModifyResponse = cacheMsgReqRes(msg)
 	}
 
 	// Set the origin as target.
@@ -225,7 +226,7 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 	// }()
 
 	msg, err := asMsgValidatingWriting(responseWriter, request)
-	if errors.Is(err, errUnknownOrNotJSONRPC) {
+	if errors.Is(err, errRequestUnknownMsgType) {
 		// The request cannot be decoded as a simple jsonrpcMessage,
 		// so we don't know how to handle it.
 		handleProxy(responseWriter, request, msg)
