@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/patrickmn/go-cache"
@@ -165,13 +166,19 @@ func cacheMsgReqRes(reqMsg *jsonrpcMessage) func(*http.Response) error {
 
 // asMsgValidatingWriting validates and reads the request into a *jsonrpcMessage and validates app-arbitrary conditions.
 var errRequestUnknownMsgType = errors.New("unable to decode to json rpc message")
-var erRequestNotPOST = errors.New("request method must be POST")
+var errRequestNotPOST = errors.New("request method must be POST")
+var errRequestNotJSON = errors.New("request header must define Content-Type: application/json or be left empty")
 
 func asMsgValidatingWriting(responseWriter http.ResponseWriter, request *http.Request) (*jsonrpcMessage, error) {
 	if request.Method != "POST" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte("invalid method: method must be POST, you sent a " + request.Method))
-		return nil, erRequestNotPOST
+		responseWriter.Write([]byte(errRequestNotPOST.Error() + ", you sent: " + request.Method))
+		return nil, errRequestNotPOST
+	}
+	if contentType := request.Header.Get("Content-Type"); !strings.Contains(contentType, "application/json") && contentType != "" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		responseWriter.Write([]byte(errRequestNotPOST.Error() + ", you sent: '" + contentType + "'"))
+		return nil, errRequestNotJSON
 	}
 
 	// Since the request may be valid, but unknown encoding or data type (ie. batches),
