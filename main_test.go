@@ -104,9 +104,10 @@ func TestPosts(t *testing.T) {
 		handler := http.HandlerFunc(handler)
 		handler.ServeHTTP(rr, req)
 
+		dump, _ := httputil.DumpResponse(rr.Result(), true)
+		t.Logf("<- %v", string(dump))
+
 		if status := rr.Code; status != c.expectStatus {
-			dump, _ := httputil.DumpResponse(rr.Result(), true)
-			t.Logf("<- %v", string(dump))
 			t.Errorf(
 				"case: %d, unexpected status: got (%v) want (%v)",
 				i,
@@ -122,13 +123,6 @@ func TestPosts(t *testing.T) {
 			if !bytes.Equal(c.postData.ID, msg.ID) {
 				t.Errorf("mismatched ids: request=%v response=%v", string(c.postData.ID), string(msg.ID))
 			}
-
-			dump, err := httputil.DumpResponse(rr.Result(), true)
-			if err != nil {
-				t.Errorf("dump error: %v", err)
-			}
-			t.Logf("<- %s", string(dump))
-
 		}
 	}
 
@@ -201,16 +195,14 @@ func TestBatchRequests(t *testing.T) {
 	handler := http.HandlerFunc(handler)
 	handler.ServeHTTP(rr, req)
 
+	dump, _ := httputil.DumpResponse(rr.Result(), true)
+	t.Logf("<- %v", string(dump))
+
 	if status := rr.Code; status != http.StatusOK {
-		dump, _ := httputil.DumpResponse(rr.Result(), true)
-		t.Logf("<- %v", string(dump))
 		t.Errorf(
 			"unexpected status: got (%v) want (%v)",
 			status,
 			http.StatusBadRequest,
 		)
-	} else {
-		dump, _ := httputil.DumpResponse(rr.Result(), true)
-		t.Logf("<- %v", string(dump))
 	}
 }
