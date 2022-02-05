@@ -271,3 +271,41 @@ func TestHandler22(t *testing.T) {
 		t.Errorf("unexpected status: got (%v) want (%v)", status, http.StatusBadRequest)
 	}
 }
+
+// TestHandlingMethodType expects that the server handles only POST methods.
+func TestNullInBatchGethHandling(t *testing.T) {
+
+	g := mustStartTestOrigin(t)
+	defer g.Process.Kill()
+
+	dataStr := `[
+{"jsonrpc":"2.0","id":69,"method":"eth_blockNumber","params":[]},
+{"jsonrpc":"2.0","id":42,"method":"eth_syncing","params":[]},
+{"jsonrpc":"2.0","id":42,"method":"web3_clientVersion","params":[]},
+null,
+{"jsonrpc":"2.0","id":42,"method":"eth_noop","params":[]}
+]
+`
+	data := bytes.NewBuffer([]byte(dataStr))
+	req, err := http.NewRequest("POST", "/", data)
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqDump, err := httputil.DumpRequest(req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("-> %v", string(reqDump))
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(handler2)
+	handler.ServeHTTP(rr, req)
+
+	dump, _ := httputil.DumpResponse(rr.Result(), true)
+	t.Logf("<- %v", string(dump))
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("unexpected status: got (%v) want (%v)", status, http.StatusBadRequest)
+	}
+}

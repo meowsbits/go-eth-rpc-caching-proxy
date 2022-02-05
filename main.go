@@ -331,6 +331,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	replies := make([]*jsonrpcMessage, len(msgs))
 
 	for i, msg := range msgs {
+		if msg == nil || !msg.hasValidID() || !msg.isCall() {
+			continue
+		}
 		key, err := msg.cacheKey()
 		if err != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
@@ -360,7 +363,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	}
 
 	for i, r := range replies {
-		if r != nil {
+		if msgs[i] == nil || r != nil {
 			continue
 		}
 		// For the empty replies (not found in cache).
@@ -398,7 +401,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		}
 
 		replies[i] = msgs[0]
-		
+
 		cloneHeaders(pres, responseWriter)
 	}
 
