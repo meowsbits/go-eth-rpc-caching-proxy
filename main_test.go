@@ -281,31 +281,41 @@ func TestNullInBatchGethHandling(t *testing.T) {
 	dataStr := `[
 {"jsonrpc":"2.0","id":69,"method":"eth_blockNumber","params":[]},
 {"jsonrpc":"2.0","id":42,"method":"eth_syncing","params":[]},
-{"jsonrpc":"2.0","id":42,"method":"web3_clientVersion","params":[]},
+{"jsonrpc":"2.0","id":15,"method":"web3_clientVersion","params":[]},
 null,
-{"jsonrpc":"2.0","id":42,"method":"eth_noop","params":[]}
+{"jsonrpc":"2.0","id":3,"method":"eth_noop","params":[]}
 ]
 `
-	data := bytes.NewBuffer([]byte(dataStr))
-	req, err := http.NewRequest("POST", "/", data)
-	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
-	if err != nil {
-		t.Fatal(err)
+
+	run := func() {
+		data := bytes.NewBuffer([]byte(dataStr))
+		req, err := http.NewRequest("POST", "/", data)
+		req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		reqDump, err := httputil.DumpRequest(req, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("-> %v", string(reqDump))
+
+		rr := httptest.NewRecorder()
+		handler := http.HandlerFunc(handler2)
+		handler.ServeHTTP(rr, req)
+
+		dump, _ := httputil.DumpResponse(rr.Result(), true)
+		t.Logf("<- %v", string(dump))
+		if status := rr.Code; status != http.StatusOK {
+			t.Errorf("unexpected status: got (%v) want (%v)", status, http.StatusBadRequest)
+		}
+	}
+	for i := 0; i < 100; i++ {
+		if i%10 == 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		run()
 	}
 
-	reqDump, err := httputil.DumpRequest(req, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("-> %v", string(reqDump))
-
-	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handler2)
-	handler.ServeHTTP(rr, req)
-
-	dump, _ := httputil.DumpResponse(rr.Result(), true)
-	t.Logf("<- %v", string(dump))
-	if status := rr.Code; status != http.StatusOK {
-		t.Errorf("unexpected status: got (%v) want (%v)", status, http.StatusBadRequest)
-	}
 }

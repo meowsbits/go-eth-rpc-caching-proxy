@@ -331,6 +331,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	replies := make([]*jsonrpcMessage, len(msgs))
 
 	for i, msg := range msgs {
+		// TODO: improve sanitation and validation before handling too seriously.
 		if msg == nil || !msg.hasValidID() || !msg.isCall() {
 			continue
 		}
@@ -360,52 +361,140 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		}
 
 		//   Cache miss.
+		log.Printf("CACHE: miss / key=%v", key)
 	}
 
+	// Assemble a batch of calls needed to forward to the origin.
+	misses := []*jsonrpcMessage{}
 	for i, r := range replies {
 		if msgs[i] == nil || r != nil {
 			continue
 		}
-		// For the empty replies (not found in cache).
-		msg := msgs[i]
-		pres, err := http.Post(remote.String(), "application/json", bytes.NewBuffer(msg.mustJSONBytes()))
-		if err != nil {
-			responseWriter.WriteHeader(http.StatusInternalServerError)
-			responseWriter.Write([]byte(err.Error()))
-			return
-		}
-		// Do the cache.
-		err = cacheMsgReqRes(msg)(pres)
-		if err != nil {
-			responseWriter.WriteHeader(http.StatusInternalServerError)
-			responseWriter.Write([]byte(err.Error()))
-			return
-		}
-
-		// Read body as JSON, then parse to type.
-		bodyJSON := json.RawMessage{}
-		// I expect the Decoder to error if the body is not valid JSON.
-		if err := json.NewDecoder(pres.Body).Decode(&bodyJSON); err != nil {
-			responseWriter.WriteHeader(http.StatusInternalServerError)
-			responseWriter.Write([]byte(err.Error()))
-			return
-		}
-		// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
-		_ = request.Body.Close()
-		// Parse.
-		msgs, isBatch := parseMessage(bodyJSON)
-		if isBatch {
-			responseWriter.WriteHeader(http.StatusInternalServerError)
-			responseWriter.Write([]byte("unexpected response from origin server: batch"))
-			return
-		}
-
-		replies[i] = msgs[0]
-
-		cloneHeaders(pres, responseWriter)
+		misses = append(misses, msgs[i])
 	}
 
-	responseWriter.Header().Set("Content-Type", "application/json")
+	// Return early if the cache completely satisfied request.
+	if len(misses) == 0 {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(responseWriter)
+		if isBatch {
+			enc.Encode(replies)
+		} else {
+			enc.Encode(replies[0])
+		}
+		return
+	}
+
+	// JSON encode the new sub-batch for shipping to the origin.
+	marshaled, err := json.Marshal(misses)
+	if err != nil {
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+		responseWriter.Write([]byte(err.Error()))
+		return
+	}
+
+	// Send batch request (which includes only the calls to which we don't have cached responses)
+	// to origin.
+	res, err := http.Post(remote.String(), "application/json", bytes.NewReader(marshaled))
+	if err != nil {
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+		responseWriter.Write([]byte(err.Error()))
+		return
+	}
+
+	// Read body as JSON, then parse to type.
+	bodyJSON = json.RawMessage{}
+	// I expect the Decoder to error if the body is not valid JSON.
+	if err := json.NewDecoder(res.Body).Decode(&bodyJSON); err != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		responseWriter.Write([]byte(err.Error()))
+		return
+	}
+	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
+	_ = request.Body.Close()
+	// Parse.
+	newReplies, _ := parseMessage(bodyJSON) // I assume we get a batch response to our batch request.
+	nri := 0                                // New Reply Index. We expect the order shipped to be preserved in the order received.
+	for i, r := range replies {
+		if msgs[i] == nil || r != nil {
+			continue
+		}
+
+		// Look up our reply by index.
+		newReply := newReplies[nri]
+		nri++
+		// Assign reply to existing replies filled from cache.
+		// Note that the ID is good to go here.
+		replies[i] = newReply
+
+		// [Maybe Prettier]
+		// cacheMsgReqRes(msgs[i])(res)
+
+		// [Ugly] Manually handle the caching because wrapping the cache in
+		// a function which needs a request
+		key, err := msgs[i].cacheKey()
+		if err != nil {
+			responseWriter.WriteHeader(http.StatusBadRequest)
+			responseWriter.Write([]byte(err.Error()))
+			return
+		}
+
+		ttl := getCacheDuration(msgs[i], newReply)
+
+		// Augment the response header with the cache values.
+		// The client should have a clue about how we're rolling.
+		responseWriter.Header().Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
+			ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
+
+		// Cache the response.
+		c.Set(key, res, ttl)
+		c.Set(key+"msg", newReply, ttl)
+	}
+
+	// for i, r := range replies {
+	// 	if msgs[i] == nil || r != nil {
+	// 		continue
+	// 	}
+	// 	// For the empty replies (not found in cache).
+	// 	msg := msgs[i]
+	// 	pres, err := http.Post(remote.String(), "application/json", bytes.NewBuffer(msg.mustJSONBytes()))
+	// 	if err != nil {
+	// 		responseWriter.WriteHeader(http.StatusInternalServerError)
+	// 		responseWriter.Write([]byte(err.Error()))
+	// 		return
+	// 	}
+	// 	// Do the cache.
+	// 	err = cacheMsgReqRes(msg)(pres)
+	// 	if err != nil {
+	// 		responseWriter.WriteHeader(http.StatusInternalServerError)
+	// 		responseWriter.Write([]byte(err.Error()))
+	// 		return
+	// 	}
+	//
+	// 	// Read body as JSON, then parse to type.
+	// 	bodyJSON := json.RawMessage{}
+	// 	// I expect the Decoder to error if the body is not valid JSON.
+	// 	if err := json.NewDecoder(pres.Body).Decode(&bodyJSON); err != nil {
+	// 		responseWriter.WriteHeader(http.StatusInternalServerError)
+	// 		responseWriter.Write([]byte(err.Error()))
+	// 		return
+	// 	}
+	// 	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
+	// 	_ = request.Body.Close()
+	// 	// Parse.
+	// 	msgs, isBatch := parseMessage(bodyJSON)
+	// 	if isBatch {
+	// 		responseWriter.WriteHeader(http.StatusInternalServerError)
+	// 		responseWriter.Write([]byte("unexpected response from origin server: batch"))
+	// 		return
+	// 	}
+	//
+	// 	replies[i] = msgs[0]
+	//
+	// }
+	cloneHeaders(res, responseWriter)
+
+	// responseWriter.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(responseWriter)
 	if isBatch {
 		enc.Encode(replies)
