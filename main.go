@@ -1,3 +1,20 @@
+// package main implements a caching proxy for an ethereum json rpc origin.
+//
+// VALIDATION
+
+// The server validates that the request is of POST method type.
+// Only simple jsonrpcMessage data-typed requests are cached (batches are not supported).
+// In the case of batches or other unsupported (not decodable-as jsonrpcMessage), the requests
+// are proxied to the origin as-is.
+// If the request is decodable as a simple jsonnrpcMessage type, the request
+// is further validated according to the validations described in requestValidations, below.
+//
+// CACHING
+//
+// Cacheable requests are keyed on their method and params, concatenated.
+// The actual key is a sha1 sum of this concatenation.
+//
+
 package main
 
 import (
@@ -147,19 +164,24 @@ func proxyCacheResponse(request *jsonrpcMessage) func(*http.Response) error {
 }
 
 // asMsgValidatingWriting validates and reads the request into a *jsonrpcMessage and validates app-arbitrary conditions.
-func asMsgValidatingWriting(responseWriter http.ResponseWriter, request *http.Request) *jsonrpcMessage {
+var errUnknownOrNotJSONRPC = errors.New("unable to decode to json rpc message")
+
+func asMsgValidatingWriting(responseWriter http.ResponseWriter, request *http.Request) (*jsonrpcMessage, error) {
 	if request.Method != "POST" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		responseWriter.Write([]byte("invalid method: method must be POST, you sent a " + request.Method))
-		return nil
-	}
-	msg, e := requestToJSONRPC(request)
-	if e != nil {
-		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte(e.Error()))
-		return nil
+		return nil, errors.New("request method must be POST")
 	}
 
+	// Since the request may be valid, but unknown encoding or data type (ie. batches),
+	// we need to defer all unprocessable requests to the origin.
+	msg, e := requestToJSONRPC(request)
+	if e != nil {
+		return nil, errUnknownOrNotJSONRPC
+	}
+
+	// Now we know that the message is a jsonrpcMessage,
+	// so we can validate it further.
 	var err error
 	for _, v := range requestValidations {
 		if ec, errStr := v.fn(msg); ec != 0 {
@@ -168,11 +190,31 @@ func asMsgValidatingWriting(responseWriter http.ResponseWriter, request *http.Re
 			errMsg := errorMessage(err)
 			errMsg.Error.Code = ec
 			responseWriter.Write(errMsg.mustJSONBytes())
-			return nil
+			return nil, err
 		}
 	}
 
-	return msg
+	return msg, nil
+}
+
+func handleProxy(responseWriter http.ResponseWriter, request *http.Request, msg *jsonrpcMessage) {
+	// Handle the proxy.
+	proxy := httputil.NewSingleHostReverseProxy(remote)
+
+	// We'll inspect and cache the response once it comes back.
+	if msg != nil {
+		proxy.ModifyResponse = proxyCacheResponse(msg)
+	}
+
+	// Set the origin as target.
+	request.Host = remote.Host
+
+	// Remove forwarded headers because this cache should be invisible.
+	if request.Header.Get("X-Forwarded-For") != "" {
+		request.Header.Del("X-Forwarded-For")
+	}
+
+	proxy.ServeHTTP(responseWriter, request)
 }
 
 // handler responds to requests.
@@ -182,8 +224,13 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 	// log.Printf("Handler took: %v", time.Since(start))
 	// }()
 
-	msg := asMsgValidatingWriting(responseWriter, request)
-	if msg == nil {
+	msg, err := asMsgValidatingWriting(responseWriter, request)
+	if errors.Is(err, errUnknownOrNotJSONRPC) {
+		// The request cannot be decoded as a simple jsonrpcMessage,
+		// so we don't know how to handle it.
+		handleProxy(responseWriter, request, msg)
+		return
+	} else if err != nil {
 		return
 	}
 
@@ -230,18 +277,5 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 	}
 
 	// Handle the proxy.
-	proxy := httputil.NewSingleHostReverseProxy(remote)
-
-	// We'll inspect and cache the response once it comes back.
-	proxy.ModifyResponse = proxyCacheResponse(msg)
-
-	// Set the origin as target.
-	request.Host = remote.Host
-
-	// Remove forwarded headers because this cache should be invisible.
-	if request.Header.Get("X-Forwarded-For") != "" {
-		request.Header.Del("X-Forwarded-For")
-	}
-
-	proxy.ServeHTTP(responseWriter, request)
+	handleProxy(responseWriter, request, msg)
 }
