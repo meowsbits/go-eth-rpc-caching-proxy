@@ -225,6 +225,13 @@ func handleProxy(responseWriter http.ResponseWriter, request *http.Request, msg 
 	proxy.ServeHTTP(responseWriter, request)
 }
 
+// cloneHeaders copies the headers from 'base' to the given response writer.
+func cloneHeaders(base *http.Response, w http.ResponseWriter) {
+	for k := range base.Header {
+		w.Header().Set(k, base.Header.Get(k))
+	}
+}
+
 // handler responds to requests.
 func handler(responseWriter http.ResponseWriter, request *http.Request) {
 	// start := time.Now()
@@ -259,21 +266,13 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 		cachedResponse := cachedResponseV.(*http.Response)
 		cachedResponseMsg := cachedResponseMsgV.(*jsonrpcMessage)
 
-		for k := range cachedResponse.Header {
-			responseWriter.Header().Set(k, cachedResponse.Header.Get(k))
-		}
+		cloneHeaders(cachedResponse, responseWriter)
 
-		// Modify the cachedResponse value's 'id' field,
-		// setting content length as required.
-		m := &jsonrpcMessage{}
-		*m = *cachedResponseMsg
-		m.ID = msg.ID
+		responseBody := cachedResponseMsg.copyWithID(msg.ID).mustJSONBytes()
 
-		modBody := m.mustJSONBytes()
+		responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(responseBody)))
 
-		responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(modBody)))
-
-		if _, err := responseWriter.Write(modBody); err != nil {
+		if _, err := responseWriter.Write(responseBody); err != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
 			errMsg := errorMessage(err)
 			responseWriter.Write(errMsg.mustJSONBytes())
@@ -286,4 +285,8 @@ func handler(responseWriter http.ResponseWriter, request *http.Request) {
 
 	// Handle the proxy.
 	handleProxy(responseWriter, request, msg)
+}
+
+func handler2(responseWriter http.ResponseWriter, request *http.Request) {
+
 }

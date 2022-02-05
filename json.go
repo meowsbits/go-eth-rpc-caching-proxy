@@ -70,6 +70,13 @@ func (msg *jsonrpcMessage) mustJSONBytes() []byte {
 	return b
 }
 
+func (msg *jsonrpcMessage) copyWithID(id json.RawMessage) (clone *jsonrpcMessage) {
+	m := &jsonrpcMessage{}
+	*m = *msg // copy
+	m.ID = id
+	return m
+}
+
 func errorMessage(err error) *jsonrpcMessage {
 	msg := &jsonrpcMessage{Version: vsn, ID: null, Error: &jsonError{
 		Code:    defaultErrorCode,
