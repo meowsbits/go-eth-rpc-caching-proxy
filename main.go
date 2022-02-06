@@ -48,8 +48,8 @@ import (
 const defaultCacheExpiration = 1 * time.Second
 const defaultCacheExpirationLong = 60 * time.Second
 
-// Create a cache with a default expiration time of 5 minutes, and which
-// purges expired items every 10 minutes
+// Create a cache with a default expiration time of defaultCacheExpiration, and which
+// purges expired items every 1 second
 var c = cache.New(defaultCacheExpiration, 1*time.Second)
 
 // remote is the parsed form of the global app setting of the proxy origin.
@@ -59,11 +59,49 @@ type requestMsgValidation struct {
 	fn func(message *jsonrpcMessage) *jsonrpcMessage
 }
 
+func mustInitOrigin() {
+	var err error
+	origin := os.Getenv("ORIGIN_URL")
+	remote, err = url.Parse(origin)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func init() {
+	mustInitOrigin()
+}
+
+func main() {
+
+	http.HandleFunc("/", handler2)
+
+	// [START setting_port]
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+		log.Printf("Defaulting to port %s", port)
+	}
+
+	log.Printf("Listening on port %s", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Fatal(err)
+	}
+	// [END setting_port]
+}
+
+var (
+	errMsgNotCall        = errors.New("request be valid JSON-RPC Call, must have 'method' annotation")
+	errMsgIsNotification = errors.New("request must have 'id' annotation")
+	errMsgPubSub         = errors.New("server does not support pubsub services")
+	errMsgIsResponse     = errors.New("request should not include 'response' annotation")
+)
+
 var requestValidations = []requestMsgValidation{
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if !message.isCall() {
-				em := message.errorResponse(errors.New("request be valid JSON-RPC Call, must have 'method' annotation"))
+				em := message.errorResponse(errMsgNotCall)
 				em.Error.Code = invalidRequestCode
 				return em
 			}
@@ -73,7 +111,7 @@ var requestValidations = []requestMsgValidation{
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isNotification() {
-				em := message.errorResponse(errors.New("request must have 'id' annotation"))
+				em := message.errorResponse(errMsgIsNotification)
 				em.Error.Code = invalidRequestCode
 				return em
 			}
@@ -83,17 +121,7 @@ var requestValidations = []requestMsgValidation{
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isSubscribe() || message.isUnsubscribe() {
-				em := message.errorResponse(errors.New("server does not support pubsub services"))
-				em.Error.Code = invalidRequestCode
-				return em
-			}
-			return nil
-		},
-	},
-	{
-		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
-			if message.isSubscribe() || message.isUnsubscribe() {
-				em := message.errorResponse(errors.New("server does not support pubsub services"))
+				em := message.errorResponse(errMsgPubSub)
 				em.Error.Code = invalidRequestCode
 				return em
 			}
@@ -103,7 +131,7 @@ var requestValidations = []requestMsgValidation{
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isResponse() {
-				em := message.errorResponse(errors.New("request should not include 'response' annotation"))
+				em := message.errorResponse(errMsgIsResponse)
 				em.Error.Code = invalidRequestCode
 				return em
 			}
@@ -138,37 +166,6 @@ func validationErrorRes(msg *jsonrpcMessage) *jsonrpcMessage {
 	return nil
 }
 
-func mustInitOrigin() {
-	var err error
-	origin := os.Getenv("ORIGIN_URL")
-	remote, err = url.Parse(origin)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func init() {
-	mustInitOrigin()
-}
-
-func main() {
-
-	http.HandleFunc("/", handler2)
-
-	// [START setting_port]
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-		log.Printf("Defaulting to port %s", port)
-	}
-
-	log.Printf("Listening on port %s", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		log.Fatal(err)
-	}
-	// [END setting_port]
-}
-
 // getCacheDuration decides how long a response to a request should be cached for.
 func getCacheDuration(request, response *jsonrpcMessage) time.Duration {
 	if response.isError() {
@@ -189,6 +186,9 @@ func cloneHeaders(w http.ResponseWriter, base *http.Response) {
 	}
 }
 
+// validateRequestWriting writes a jsonrpc message error to the responseWriter if the
+// request is determined to be invalid.
+// It reused the provided message's ID, if the message is not nil.
 func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Request, msg *jsonrpcMessage) (ok bool) {
 	if request.Method != "POST" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
