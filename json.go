@@ -84,7 +84,7 @@ func (msg *jsonrpcMessage) copyWithID(id json.RawMessage) (clone *jsonrpcMessage
 }
 
 func errorMessage(err error) *jsonrpcMessage {
-	msg := &jsonrpcMessage{Version: vsn, ID: null, Error: &jsonError{
+	msg := &jsonrpcMessage{Version: vsn, Error: &jsonError{
 		Code:    defaultErrorCode,
 		Message: err.Error(),
 	}}

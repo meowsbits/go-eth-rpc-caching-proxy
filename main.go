@@ -1,17 +1,29 @@
 // package main implements a caching proxy for an ethereum json rpc origin.
 //
+// SERVER
+//
+// Only HTTP transport is supported.
+// An ORIGIN_URL environment variable configures the origin of proxy,
+// and must be provided or the application will panic on start up.
+//
 // VALIDATION
-
-// The server validates that the request is of POST method type.
-// Only simple jsonrpcMessage data-typed requests are cached (batches are not supported).
-// In the case of batches or other unsupported (not decodable-as jsonrpcMessage), the requests
-// are proxied to the origin as-is.
-// If the request is decodable as a simple jsonnrpcMessage type, the request
-// is further validated according to the validations described in requestValidations, below.
+//
+// Requests must be of method POST and have Content-Type: application/json or empty.
+// Appropriate calls are enforced; only JSONRPC "call"-type requests are supported.
+// Batches are fully supported, but not required. Requests will be responsed to in-kind (single:single, batch:batch).
+// A blacklist-style validation feature supports quick responses to methods
+// which are assumed to be unavailable (eg. 'admin_.*').
+//
+// API
+//
+// Response bodies are always JSONRPC-valid objects.
+// Requests with invalid encoding, method, or content types get a 400 status response.
+// Requests with invalid JSONRPC schemas get a 200 response, but a JSONRPC error message.
 //
 // CACHING
 //
-// Cacheable requests are keyed on their method and params, concatenated.
+// Caching is handled at the single-request level (batches are disassembled and reassembled).
+// Cacheable requests are keyed on their method and params, concatenated with '/' delimiting.
 // The actual key is a sha1 sum of this concatenation.
 //
 
@@ -90,6 +102,16 @@ var requestValidations = []requestMsgValidation{
 	},
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
+			if message.isResponse() {
+				em := message.errorResponse(errors.New("request should not include 'response' annotation"))
+				em.Error.Code = invalidRequestCode
+				return em
+			}
+			return nil
+		},
+	},
+	{
+		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			for _, r := range []*regexp.Regexp{
 				regexp.MustCompile(`^admin`),
 				regexp.MustCompile(`^personal`),
@@ -158,19 +180,23 @@ func getCacheDuration(request, response *jsonrpcMessage) time.Duration {
 // asMsgValidatingWriting validates and reads the request into a *jsonrpcMessage and validates app-arbitrary conditions.
 var errRequestNotPOST = errors.New("request method must be POST")
 var errRequestNotContentTypeJSON = errors.New("request content type must be application/json (or left empty)")
+var errRequestMissingBody = errors.New("request missing body")
 
 // cloneHeaders copies the headers from 'base' to the given response writer.
-func cloneHeaders(base *http.Response, w http.ResponseWriter) {
+func cloneHeaders(w http.ResponseWriter, base *http.Response) {
 	for k := range base.Header {
 		w.Header().Set(k, base.Header.Get(k))
 	}
 }
 
-func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Request) (ok bool) {
+func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Request, msg *jsonrpcMessage) (ok bool) {
 	if request.Method != "POST" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		em := errorMessage(fmt.Errorf("%w: you sent: %v", errRequestNotPOST, request.Method))
 		em.Error.Code = invalidRequestCode
+		if msg != nil {
+			em = em.copyWithID(msg.ID)
+		}
 		responseWriter.Write(em.mustJSONBytes())
 		return false
 	}
@@ -178,18 +204,23 @@ func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Re
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		em := errorMessage(fmt.Errorf("%w: you sent: %v", errRequestNotContentTypeJSON, contentType))
 		em.Error.Code = invalidRequestCode
+		if msg != nil {
+			em = em.copyWithID(msg.ID)
+		}
 		responseWriter.Write(em.mustJSONBytes())
 		return false
 	}
 	return true
 }
 
-var mockCacheMiss = 0
-var mockCacheHit = 0
-
 // handler2 is version 2 of the handler.
 func handler2(responseWriter http.ResponseWriter, request *http.Request) {
-	if !validateRequestWriting(responseWriter, request) {
+
+	if request.Body == nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		em := errorMessage(errRequestMissingBody)
+		em.Error.Code = invalidRequestCode
+		responseWriter.Write(em.mustJSONBytes())
 		return
 	}
 
@@ -205,8 +236,13 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	}
 	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
 	_ = request.Body.Close()
+
 	// Parse.
 	msgs, isBatch := parseMessage(bodyJSON)
+
+	if !validateRequestWriting(responseWriter, request, msgs[0]) {
+		return
+	}
 
 	// Replies are the collection of JSONRPC messages in response
 	// to the messages we've received and decoded.
@@ -222,12 +258,10 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// and blacklist-style constraints which fill responses with predefined
 	// jsonrpc errors.
 	for i, msg := range msgs {
-		// TODO: improve sanitation and validation before handling too seriously.
 		if msg == nil {
 			continue
 		}
 		if errMsg := validationErrorRes(msg); errMsg != nil {
-			responseWriter.WriteHeader(http.StatusBadRequest)
 			replies[i] = errMsg
 			continue
 		}
@@ -248,20 +282,18 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		//   Cache hit.
 		if cacheHit && cacheHit2 {
 			// log.Printf("CACHE: hit / key=%v", key)
-			mockCacheHit++
 
 			// To typed vars.
 			cachedResponse := cachedResponseV.(*http.Response)
 			cachedResponseMsg := cachedResponseMsgV.(*jsonrpcMessage)
 
-			cloneHeaders(cachedResponse, responseWriter)
+			cloneHeaders(responseWriter, cachedResponse)
 
 			replies[i] = cachedResponseMsg.copyWithID(msg.ID)
 			continue
 		}
 		//   Cache miss.
 		// log.Printf("CACHE: miss / key=%v", key)
-		mockCacheMiss++
 	}
 
 	// Assemble a batch of calls needed to forward to the origin.
@@ -328,11 +360,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		// Note that the ID is good to go here.
 		replies[i] = newReply
 
-		// [Maybe Prettier]
-		// cacheMsgReqRes(msgs[i])(res)
-
-		// [Ugly] Manually handle the caching because wrapping the cache in
-		// a function which needs a request
+		// Handle the actual caching.
 		key, err := msgs[i].cacheKey()
 		if err != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
@@ -363,7 +391,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// the batch origin response.
 	// Note that this could overwrite the Cache-Control, or Content-Type headers
 	// that this application will set.
-	cloneHeaders(res, responseWriter)
+	cloneHeaders(responseWriter, res)
 
 	handlerWriteResponse(responseWriter, replies, isBatch)
 }
