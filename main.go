@@ -149,6 +149,7 @@ func getCacheDuration(request, response *jsonrpcMessage) time.Duration {
 
 // asMsgValidatingWriting validates and reads the request into a *jsonrpcMessage and validates app-arbitrary conditions.
 var errRequestNotPOST = errors.New("request method must be POST")
+var errRequestNotContentTypeJSON = errors.New("request content type must be application/json (or left empty)")
 
 // cloneHeaders copies the headers from 'base' to the given response writer.
 func cloneHeaders(base *http.Response, w http.ResponseWriter) {
@@ -165,7 +166,7 @@ func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Re
 	}
 	if contentType := request.Header.Get("Content-Type"); !strings.Contains(contentType, "application/json") && contentType != "" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte(errRequestNotPOST.Error() + ", you sent: '" + contentType + "'"))
+		responseWriter.Write([]byte(errRequestNotContentTypeJSON.Error() + ", you sent: '" + contentType + "'"))
 		return false
 	}
 	return true
@@ -339,5 +340,5 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	}
 	responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 	responseWriter.Write(data)
-	
+
 }
