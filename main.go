@@ -243,12 +243,14 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// Return early if the cache completely satisfied request.
 	if len(misses) == 0 {
 		responseWriter.Header().Set("Content-Type", "application/json")
-		enc := json.NewEncoder(responseWriter)
+		var data []byte
 		if isBatch {
-			enc.Encode(replies)
+			data, _ = json.Marshal(replies)
 		} else {
-			enc.Encode(replies[0])
+			data, _ = json.Marshal(replies[0])
 		}
+		responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+		responseWriter.Write(data)
 		return
 	}
 
@@ -328,11 +330,14 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// that this application will set.
 	cloneHeaders(res, responseWriter)
 
-	// responseWriter.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(responseWriter)
+	responseWriter.Header().Set("Content-Type", "application/json")
+	var data []byte
 	if isBatch {
-		enc.Encode(replies)
+		data, _ = json.Marshal(replies)
 	} else {
-		enc.Encode(replies[0])
+		data, _ = json.Marshal(replies[0])
 	}
+	responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	responseWriter.Write(data)
+	
 }
