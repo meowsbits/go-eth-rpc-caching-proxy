@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"regexp"
@@ -45,44 +44,44 @@ var c = cache.New(defaultCacheExpiration, 1*time.Second)
 var remote *url.URL
 
 type requestMsgValidation struct {
-	fn func(message *jsonrpcMessage) (int, string)
+	fn func(message *jsonrpcMessage) *jsonrpcMessage
 }
 
 var requestValidations = []requestMsgValidation{
 	{
-		fn: func(message *jsonrpcMessage) (int, string) {
+		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if !message.isCall() {
-				return defaultErrorCode, "request be valid JSON-RPC Call, must have 'method' annotation"
+				return message.errorResponse(errors.New("request be valid JSON-RPC Call, must have 'method' annotation"))
 			}
-			return 0, ""
+			return nil
 		},
 	},
 	{
-		fn: func(message *jsonrpcMessage) (int, string) {
+		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isNotification() {
-				return defaultErrorCode, "request must have 'id' annotation"
+				return message.errorResponse(errors.New("request must have 'id' annotation"))
 			}
-			return 0, ""
+			return nil
 		},
 	},
 	{
-		fn: func(message *jsonrpcMessage) (int, string) {
+		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isSubscribe() || message.isUnsubscribe() {
-				return defaultErrorCode, "server does not support pubsub services"
+				return message.errorResponse(errors.New("server does not support pubsub services"))
 			}
-			return 0, ""
+			return nil
 		},
 	},
 	{
-		fn: func(message *jsonrpcMessage) (int, string) {
+		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isSubscribe() || message.isUnsubscribe() {
-				return defaultErrorCode, "server does not support pubsub services"
+				return message.errorResponse(errors.New("server does not support pubsub services"))
 			}
-			return 0, ""
+			return nil
 		},
 	},
 	{
-		fn: func(message *jsonrpcMessage) (int, string) {
+		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			for _, r := range []*regexp.Regexp{
 				regexp.MustCompile(`^admin`),
 				regexp.MustCompile(`^personal`),
@@ -90,12 +89,23 @@ var requestValidations = []requestMsgValidation{
 				regexp.MustCompile(`^miner`),
 			} {
 				if r.MatchString(message.Method) {
-					return -32601, fmt.Sprintf("the method %s does not exist/is not available", message.Method)
+					res := message.errorResponse(fmt.Errorf("the method %s does not exist/is not available", message.Method))
+					res.Error.Code = -32601
+					return res
 				}
 			}
-			return 0, ""
+			return nil
 		},
 	},
+}
+
+func validationErrorRes(msg *jsonrpcMessage) *jsonrpcMessage {
+	for _, v := range requestValidations {
+		if errMsg := v.fn(msg); errMsg != nil {
+			return errMsg
+		}
+	}
+	return nil
 }
 
 func mustInitOrigin() {
@@ -113,7 +123,7 @@ func init() {
 
 func main() {
 
-	http.HandleFunc("/", handler)
+	http.HandleFunc("/", handler2)
 
 	// [START setting_port]
 	port := os.Getenv("PORT")
@@ -137,164 +147,14 @@ func getCacheDuration(request, response *jsonrpcMessage) time.Duration {
 	return defaultCacheExpiration
 }
 
-// cacheMsgReqRes is the moneymaker.
-// It is the only function that has access to both a request and associated response.
-func cacheMsgReqRes(reqMsg *jsonrpcMessage) func(*http.Response) error {
-	return func(response *http.Response) error {
-		key, err := reqMsg.cacheKey()
-		if err != nil {
-			return err
-		}
-
-		resMsg, err := responseToJSONRPC(response)
-		if err != nil {
-			return err
-		}
-
-		ttl := getCacheDuration(reqMsg, resMsg)
-
-		// Augment the response header with the cache values.
-		// The client should have a clue about how we're rolling.
-		response.Header.Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
-			ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
-
-		// Cache the response.
-		c.Set(key, response, ttl)
-		c.Set(key+"msg", resMsg, ttl)
-
-		return nil
-	}
-}
-
 // asMsgValidatingWriting validates and reads the request into a *jsonrpcMessage and validates app-arbitrary conditions.
-var errRequestUnknownMsgType = errors.New("unable to decode to json rpc message")
 var errRequestNotPOST = errors.New("request method must be POST")
-var errRequestNotJSON = errors.New("request header must define Content-Type: application/json or be left empty")
-
-func asMsgValidatingWriting(responseWriter http.ResponseWriter, request *http.Request) (*jsonrpcMessage, error) {
-	if request.Method != "POST" {
-		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte(errRequestNotPOST.Error() + ", you sent: " + request.Method))
-		return nil, errRequestNotPOST
-	}
-	if contentType := request.Header.Get("Content-Type"); !strings.Contains(contentType, "application/json") && contentType != "" {
-		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte(errRequestNotPOST.Error() + ", you sent: '" + contentType + "'"))
-		return nil, errRequestNotJSON
-	}
-
-	// Since the request may be valid, but unknown encoding or data type (ie. batches),
-	// we need to defer all unprocessable requests to the origin.
-	msg, e := requestToJSONRPC(request)
-	if e != nil {
-		return nil, errRequestUnknownMsgType
-	}
-
-	// Now we know that the message is a jsonrpcMessage,
-	// so we can validate it further.
-	var err error
-	for _, v := range requestValidations {
-		if ec, errStr := v.fn(msg); ec != 0 {
-			err = errors.New(errStr)
-			responseWriter.WriteHeader(http.StatusBadRequest)
-			errMsg := errorMessage(err)
-			errMsg.Error.Code = ec
-			responseWriter.Write(errMsg.mustJSONBytes())
-			return nil, err
-		}
-	}
-
-	return msg, nil
-}
-
-func handleProxy(responseWriter http.ResponseWriter, request *http.Request, msg *jsonrpcMessage) {
-	// Handle the proxy.
-	proxy := httputil.NewSingleHostReverseProxy(remote)
-
-	// We'll inspect and cache the response once it comes back.
-	if msg != nil {
-		proxy.ModifyResponse = cacheMsgReqRes(msg)
-	}
-
-	// Set the origin as target.
-	request.Host = remote.Host
-
-	// Remove forwarded headers because this cache should be invisible.
-	if request.Header.Get("X-Forwarded-For") != "" {
-		request.Header.Del("X-Forwarded-For")
-	}
-
-	proxy.ServeHTTP(responseWriter, request)
-}
 
 // cloneHeaders copies the headers from 'base' to the given response writer.
 func cloneHeaders(base *http.Response, w http.ResponseWriter) {
 	for k := range base.Header {
 		w.Header().Set(k, base.Header.Get(k))
 	}
-}
-
-type parsedRequest struct {
-	request     *http.Request
-	calls       []*jsonrpcMessage
-	callIsBatch bool
-	replies     []*jsonrpcMessage
-}
-
-// handler responds to requests.
-// It is deprecated in favor of handler2.
-func handler(responseWriter http.ResponseWriter, request *http.Request) {
-	// start := time.Now()
-	// defer func() {
-	// log.Printf("Handler took: %v", time.Since(start))
-	// }()
-
-	msg, err := asMsgValidatingWriting(responseWriter, request)
-	if errors.Is(err, errRequestUnknownMsgType) {
-		// The request cannot be decoded as a simple jsonrpcMessage,
-		// so we don't know how to handle it.
-		handleProxy(responseWriter, request, msg)
-		return
-	} else if err != nil {
-		return
-	}
-
-	key, err := msg.cacheKey()
-	if err != nil {
-		responseWriter.WriteHeader(http.StatusInternalServerError)
-		errMsg := errorMessage(err)
-		responseWriter.Write(errMsg.mustJSONBytes())
-		return
-	}
-
-	// Run both gets, and confirm that they BOTH succeed.
-	cachedResponseV, cacheHit := c.Get(key)
-	cachedResponseMsgV, cacheHit2 := c.Get(key + "msg")
-	if cacheHit && cacheHit2 {
-		log.Printf("CACHE: hit / key=%v", key)
-
-		cachedResponse := cachedResponseV.(*http.Response)
-		cachedResponseMsg := cachedResponseMsgV.(*jsonrpcMessage)
-
-		cloneHeaders(cachedResponse, responseWriter)
-
-		responseBody := cachedResponseMsg.copyWithID(msg.ID).mustJSONBytes()
-
-		responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(responseBody)))
-
-		if _, err := responseWriter.Write(responseBody); err != nil {
-			responseWriter.WriteHeader(http.StatusInternalServerError)
-			errMsg := errorMessage(err)
-			responseWriter.Write(errMsg.mustJSONBytes())
-			return
-		}
-		return
-	} else {
-		log.Printf("CACHE: miss / key=%v", key)
-	}
-
-	// Handle the proxy.
-	handleProxy(responseWriter, request, msg)
 }
 
 func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Request) (ok bool) {
@@ -334,9 +194,14 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 
 	for i, msg := range msgs {
 		// TODO: improve sanitation and validation before handling too seriously.
-		if msg == nil || !msg.hasValidID() || !msg.isCall() {
+		if msg == nil {
 			continue
 		}
+		if errMsg := validationErrorRes(msg); errMsg != nil {
+			replies[i] = errMsg
+			continue
+		}
+
 		key, err := msg.cacheKey()
 		if err != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
@@ -456,55 +321,6 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		c.Set(key, res, ttl)
 		c.Set(key+"msg", newReply, ttl)
 	}
-
-	// This is deadcode.
-	// It was my first draft at filling the un-cached replies.
-	// It makes one request to the origin for each uncached call.
-	// It is deprecated by the several stanzas above, where the
-	// unfilled (uncached) responses are batched into a single
-	// request to the origin.
-	//
-	// for i, r := range replies {
-	// 	if msgs[i] == nil || r != nil {
-	// 		continue
-	// 	}
-	// 	// For the empty replies (not found in cache).
-	// 	msg := msgs[i]
-	// 	pres, err := http.Post(remote.String(), "application/json", bytes.NewBuffer(msg.mustJSONBytes()))
-	// 	if err != nil {
-	// 		responseWriter.WriteHeader(http.StatusInternalServerError)
-	// 		responseWriter.Write([]byte(err.Error()))
-	// 		return
-	// 	}
-	// 	// Do the cache.
-	// 	err = cacheMsgReqRes(msg)(pres)
-	// 	if err != nil {
-	// 		responseWriter.WriteHeader(http.StatusInternalServerError)
-	// 		responseWriter.Write([]byte(err.Error()))
-	// 		return
-	// 	}
-	//
-	// 	// Read body as JSON, then parse to type.
-	// 	bodyJSON := json.RawMessage{}
-	// 	// I expect the Decoder to error if the body is not valid JSON.
-	// 	if err := json.NewDecoder(pres.Body).Decode(&bodyJSON); err != nil {
-	// 		responseWriter.WriteHeader(http.StatusInternalServerError)
-	// 		responseWriter.Write([]byte(err.Error()))
-	// 		return
-	// 	}
-	// 	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
-	// 	_ = request.Body.Close()
-	// 	// Parse.
-	// 	msgs, isBatch := parseMessage(bodyJSON)
-	// 	if isBatch {
-	// 		responseWriter.WriteHeader(http.StatusInternalServerError)
-	// 		responseWriter.Write([]byte("unexpected response from origin server: batch"))
-	// 		return
-	// 	}
-	//
-	// 	replies[i] = msgs[0]
-	//
-	// }
 
 	// Clone any and all headers from
 	// the batch origin response.
