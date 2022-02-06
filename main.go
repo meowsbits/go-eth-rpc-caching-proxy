@@ -51,7 +51,9 @@ var requestValidations = []requestMsgValidation{
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if !message.isCall() {
-				return message.errorResponse(errors.New("request be valid JSON-RPC Call, must have 'method' annotation"))
+				em := message.errorResponse(errors.New("request be valid JSON-RPC Call, must have 'method' annotation"))
+				em.Error.Code = invalidRequestCode
+				return em
 			}
 			return nil
 		},
@@ -59,7 +61,9 @@ var requestValidations = []requestMsgValidation{
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isNotification() {
-				return message.errorResponse(errors.New("request must have 'id' annotation"))
+				em := message.errorResponse(errors.New("request must have 'id' annotation"))
+				em.Error.Code = invalidRequestCode
+				return em
 			}
 			return nil
 		},
@@ -67,7 +71,9 @@ var requestValidations = []requestMsgValidation{
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isSubscribe() || message.isUnsubscribe() {
-				return message.errorResponse(errors.New("server does not support pubsub services"))
+				em := message.errorResponse(errors.New("server does not support pubsub services"))
+				em.Error.Code = invalidRequestCode
+				return em
 			}
 			return nil
 		},
@@ -75,7 +81,9 @@ var requestValidations = []requestMsgValidation{
 	{
 		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
 			if message.isSubscribe() || message.isUnsubscribe() {
-				return message.errorResponse(errors.New("server does not support pubsub services"))
+				em := message.errorResponse(errors.New("server does not support pubsub services"))
+				em.Error.Code = invalidRequestCode
+				return em
 			}
 			return nil
 		},
@@ -90,7 +98,7 @@ var requestValidations = []requestMsgValidation{
 			} {
 				if r.MatchString(message.Method) {
 					res := message.errorResponse(fmt.Errorf("the method %s does not exist/is not available", message.Method))
-					res.Error.Code = -32601
+					res.Error.Code = methodNotFoundCode
 					return res
 				}
 			}
@@ -161,16 +169,23 @@ func cloneHeaders(base *http.Response, w http.ResponseWriter) {
 func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Request) (ok bool) {
 	if request.Method != "POST" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte(errRequestNotPOST.Error() + ", you sent: " + request.Method))
+		em := errorMessage(fmt.Errorf("%w: you sent: %v", errRequestNotPOST, request.Method))
+		em.Error.Code = invalidRequestCode
+		responseWriter.Write(em.mustJSONBytes())
 		return false
 	}
 	if contentType := request.Header.Get("Content-Type"); !strings.Contains(contentType, "application/json") && contentType != "" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte(errRequestNotContentTypeJSON.Error() + ", you sent: '" + contentType + "'"))
+		em := errorMessage(fmt.Errorf("%w: you sent: %v", errRequestNotContentTypeJSON, contentType))
+		em.Error.Code = invalidRequestCode
+		responseWriter.Write(em.mustJSONBytes())
 		return false
 	}
 	return true
 }
+
+var mockCacheMiss = 0
+var mockCacheHit = 0
 
 // handler2 is version 2 of the handler.
 func handler2(responseWriter http.ResponseWriter, request *http.Request) {
@@ -183,7 +198,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// I expect the Decoder to error if the body is not valid JSON.
 	if err := json.NewDecoder(request.Body).Decode(&bodyJSON); err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte(err.Error()))
+		em := errorMessage(err)
+		em.Error.Code = parseErrorCode
+		responseWriter.Write(em.mustJSONBytes())
 		return
 	}
 	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
@@ -210,6 +227,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 			continue
 		}
 		if errMsg := validationErrorRes(msg); errMsg != nil {
+			responseWriter.WriteHeader(http.StatusBadRequest)
 			replies[i] = errMsg
 			continue
 		}
@@ -217,7 +235,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		key, err := msg.cacheKey()
 		if err != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
-			responseWriter.Write([]byte(err.Error()))
+			em := errorMessage(err)
+			em.Error.Code = internalErrorCode
+			responseWriter.Write(em.mustJSONBytes())
 			return
 		}
 
@@ -228,6 +248,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		//   Cache hit.
 		if cacheHit && cacheHit2 {
 			// log.Printf("CACHE: hit / key=%v", key)
+			mockCacheHit++
 
 			// To typed vars.
 			cachedResponse := cachedResponseV.(*http.Response)
@@ -238,9 +259,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 			replies[i] = cachedResponseMsg.copyWithID(msg.ID)
 			continue
 		}
-
 		//   Cache miss.
 		// log.Printf("CACHE: miss / key=%v", key)
+		mockCacheMiss++
 	}
 
 	// Assemble a batch of calls needed to forward to the origin.
@@ -262,7 +283,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	marshaled, err := json.Marshal(misses)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
-		responseWriter.Write([]byte(err.Error()))
+		em := errorMessage(err)
+		em.Error.Code = internalErrorCode
+		responseWriter.Write(em.mustJSONBytes())
 		return
 	}
 
@@ -271,7 +294,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	res, err := http.Post(remote.String(), "application/json", bytes.NewReader(marshaled))
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
-		responseWriter.Write([]byte(err.Error()))
+		em := errorMessage(err)
+		em.Error.Code = internalErrorCode
+		responseWriter.Write(em.mustJSONBytes())
 		return
 	}
 
@@ -279,8 +304,10 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	bodyJSON = json.RawMessage{}
 	// I expect the Decoder to error if the body is not valid JSON.
 	if err := json.NewDecoder(res.Body).Decode(&bodyJSON); err != nil {
-		responseWriter.WriteHeader(http.StatusBadRequest)
-		responseWriter.Write([]byte(err.Error()))
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+		em := errorMessage(err)
+		em.Error.Code = internalErrorCode
+		responseWriter.Write(em.mustJSONBytes())
 		return
 	}
 	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
@@ -308,8 +335,10 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		// a function which needs a request
 		key, err := msgs[i].cacheKey()
 		if err != nil {
-			responseWriter.WriteHeader(http.StatusBadRequest)
-			responseWriter.Write([]byte(err.Error()))
+			responseWriter.WriteHeader(http.StatusInternalServerError)
+			em := errorMessage(err)
+			em.Error.Code = internalErrorCode
+			responseWriter.Write(em.mustJSONBytes())
 			return
 		}
 
@@ -319,6 +348,8 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 			// Augment the response header with the cache values.
 			// The client should have a clue about how we're rolling.
 			responseWriter.Header().Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
+				ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
+			res.Header.Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
 				ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
 			lowTTL = ttl
 		}
