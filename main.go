@@ -191,8 +191,19 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// Parse.
 	msgs, isBatch := parseMessage(bodyJSON)
 
+	// Replies are the collection of JSONRPC messages in response
+	// to the messages we've received and decoded.
+	// If we're reading a batch request, we'll respond in kind, with a batch.
+	// If it's just a single request (ie. of Object type),
+	// we'll return the first item in the slice as a single response.
 	replies := make([]*jsonrpcMessage, len(msgs))
 
+	// Loop over the request's messages and see if we
+	// can fill any of them from the cache.
+	// Messages are validated against JSON RPC schema type constraints
+	// (eg. must not be a "notification"; must include an annotation 'method')
+	// and blacklist-style constraints which fill responses with predefined
+	// jsonrpc errors.
 	for i, msg := range msgs {
 		// TODO: improve sanitation and validation before handling too seriously.
 		if msg == nil {
@@ -241,17 +252,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		misses = append(misses, msgs[i])
 	}
 
-	// Return early if the cache completely satisfied request.
+	// Return early if the cache completely satisfied the request(s).
 	if len(misses) == 0 {
-		responseWriter.Header().Set("Content-Type", "application/json")
-		var data []byte
-		if isBatch {
-			data, _ = json.Marshal(replies)
-		} else {
-			data, _ = json.Marshal(replies[0])
-		}
-		responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-		responseWriter.Write(data)
+		handlerWriteResponse(responseWriter, replies, isBatch)
 		return
 	}
 
@@ -331,14 +334,17 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// that this application will set.
 	cloneHeaders(res, responseWriter)
 
+	handlerWriteResponse(responseWriter, replies, isBatch)
+}
+
+func handlerWriteResponse(responseWriter http.ResponseWriter, responses []*jsonrpcMessage, isBatch bool) {
 	responseWriter.Header().Set("Content-Type", "application/json")
 	var data []byte
 	if isBatch {
-		data, _ = json.Marshal(replies)
+		data, _ = json.Marshal(responses)
 	} else {
-		data, _ = json.Marshal(replies[0])
+		data, _ = json.Marshal(responses[0])
 	}
 	responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 	responseWriter.Write(data)
-
 }
