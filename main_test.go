@@ -101,7 +101,7 @@ func TestPosts(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		handler := http.HandlerFunc(handler)
+		handler := http.HandlerFunc(handler2)
 		handler.ServeHTTP(rr, req)
 
 		dump, _ := httputil.DumpResponse(rr.Result(), true)
@@ -146,7 +146,7 @@ func TestHandlingMethodType(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 
-	handler := http.HandlerFunc(handler)
+	handler := http.HandlerFunc(handler2)
 	handler.ServeHTTP(rr, req)
 
 	if status := rr.Code; status != http.StatusBadRequest {
@@ -192,7 +192,7 @@ func TestBatchRequests(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 
-	handler := http.HandlerFunc(handler)
+	handler := http.HandlerFunc(handler2)
 	handler.ServeHTTP(rr, req)
 
 	dump, _ := httputil.DumpResponse(rr.Result(), true)

@@ -242,6 +242,7 @@ type parsedRequest struct {
 }
 
 // handler responds to requests.
+// It is deprecated in favor of handler2.
 func handler(responseWriter http.ResponseWriter, request *http.Request) {
 	// start := time.Now()
 	// defer func() {
@@ -310,6 +311,7 @@ func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Re
 	return true
 }
 
+// handler2 is version 2 of the handler.
 func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	if !validateRequestWriting(responseWriter, request) {
 		return
@@ -348,7 +350,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 
 		//   Cache hit.
 		if cacheHit && cacheHit2 {
-			log.Printf("CACHE: hit / key=%v", key)
+			// log.Printf("CACHE: hit / key=%v", key)
 
 			// To typed vars.
 			cachedResponse := cachedResponseV.(*http.Response)
@@ -361,7 +363,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		}
 
 		//   Cache miss.
-		log.Printf("CACHE: miss / key=%v", key)
+		// log.Printf("CACHE: miss / key=%v", key)
 	}
 
 	// Assemble a batch of calls needed to forward to the origin.
@@ -415,6 +417,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// Parse.
 	newReplies, _ := parseMessage(bodyJSON) // I assume we get a batch response to our batch request.
 	nri := 0                                // New Reply Index. We expect the order shipped to be preserved in the order received.
+	var lowTTL time.Duration                // Tracking the lowest TTL for the safest ultimate header Cache-Control value.
 	for i, r := range replies {
 		if msgs[i] == nil || r != nil {
 			continue
@@ -441,16 +444,26 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 
 		ttl := getCacheDuration(msgs[i], newReply)
 
-		// Augment the response header with the cache values.
-		// The client should have a clue about how we're rolling.
-		responseWriter.Header().Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
-			ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
+		if ttl < lowTTL || lowTTL == 0 {
+			// Augment the response header with the cache values.
+			// The client should have a clue about how we're rolling.
+			responseWriter.Header().Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
+				ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
+			lowTTL = ttl
+		}
 
 		// Cache the response.
 		c.Set(key, res, ttl)
 		c.Set(key+"msg", newReply, ttl)
 	}
 
+	// This is deadcode.
+	// It was my first draft at filling the un-cached replies.
+	// It makes one request to the origin for each uncached call.
+	// It is deprecated by the several stanzas above, where the
+	// unfilled (uncached) responses are batched into a single
+	// request to the origin.
+	//
 	// for i, r := range replies {
 	// 	if msgs[i] == nil || r != nil {
 	// 		continue
@@ -492,6 +505,11 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// 	replies[i] = msgs[0]
 	//
 	// }
+
+	// Clone any and all headers from
+	// the batch origin response.
+	// Note that this could overwrite the Cache-Control, or Content-Type headers
+	// that this application will set.
 	cloneHeaders(res, responseWriter)
 
 	// responseWriter.Header().Set("Content-Type", "application/json")
