@@ -180,9 +180,9 @@ var errRequestNotContentTypeJSON = errors.New("request content type must be appl
 var errRequestMissingBody = errors.New("request missing body")
 
 // cloneHeaders copies the headers from 'base' to the given response writer.
-func cloneHeaders(w http.ResponseWriter, base *http.Response) {
-	for k := range base.Header {
-		w.Header().Set(k, base.Header.Get(k))
+func cloneHeaders(w http.ResponseWriter, base http.Header) {
+	for k := range base {
+		w.Header().Set(k, base.Get(k))
 	}
 }
 
@@ -211,6 +211,11 @@ func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Re
 		return false
 	}
 	return true
+}
+
+type cacheObject struct {
+	header http.Header
+	body   *jsonrpcMessage
 }
 
 // handler2 is version 2 of the handler.
@@ -276,23 +281,20 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		}
 
 		// Check cache.
-		cachedResponseV, cacheHit := c.Get(key)
-		cachedResponseMsgV, cacheHit2 := c.Get(key + "msg")
+		val, ok := c.Get(key)
 
-		//   Cache hit.
-		if cacheHit && cacheHit2 {
+		if ok {
+			// Cache hit.
 			// log.Printf("CACHE: hit / key=%v", key)
 
-			// To typed vars.
-			cachedResponse := cachedResponseV.(*http.Response)
-			cachedResponseMsg := cachedResponseMsgV.(*jsonrpcMessage)
+			cached := val.(*cacheObject)
 
-			cloneHeaders(responseWriter, cachedResponse)
+			cloneHeaders(responseWriter, cached.header)
 
-			replies[i] = cachedResponseMsg.copyWithID(msg.ID)
+			replies[i] = cached.body.copyWithID(msg.ID)
 			continue
 		}
-		//   Cache miss.
+		// Cache miss.
 		// log.Printf("CACHE: miss / key=%v", key)
 	}
 
@@ -382,16 +384,20 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 			lowTTL = ttl
 		}
 
+		co := &cacheObject{
+			header: res.Header,
+			body:   newReply,
+		}
+
 		// Cache the response.
-		c.Set(key, res, ttl)
-		c.Set(key+"msg", newReply, ttl)
+		c.Set(key, co, ttl)
 	}
 
 	// Clone any and all headers from
 	// the batch origin response.
 	// Note that this could overwrite the Cache-Control, or Content-Type headers
 	// that this application will set.
-	cloneHeaders(responseWriter, res)
+	cloneHeaders(responseWriter, res.Header)
 
 	handlerWriteResponse(responseWriter, replies, isBatch)
 }
