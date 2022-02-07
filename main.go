@@ -179,10 +179,11 @@ var errRequestNotPOST = errors.New("request method must be POST")
 var errRequestNotContentTypeJSON = errors.New("request content type must be application/json (or left empty)")
 var errRequestMissingBody = errors.New("request missing body")
 
-// cloneHeaders copies the headers from 'base' to the given response writer.
-func cloneHeaders(w http.ResponseWriter, base http.Header) {
-	for k := range base {
-		w.Header().Set(k, base.Get(k))
+// copyHeaders copies the headers from 'base' to the given response writer.
+// Note it does NOT remove headers which do not exist on the src.
+func copyHeaders(dst http.ResponseWriter, src http.Header) {
+	for k := range src {
+		dst.Header().Set(k, src.Get(k))
 	}
 }
 
@@ -289,7 +290,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 
 			cached := val.(*cacheObject)
 
-			cloneHeaders(responseWriter, cached.header)
+			copyHeaders(responseWriter, cached.header)
 
 			replies[i] = cached.body.copyWithID(msg.ID)
 			continue
@@ -397,12 +398,13 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// the batch origin response.
 	// Note that this could overwrite the Cache-Control, or Content-Type headers
 	// that this application will set.
-	cloneHeaders(responseWriter, res.Header)
+	copyHeaders(responseWriter, res.Header)
 
 	handlerWriteResponse(responseWriter, replies, isBatch)
 }
 
 func handlerWriteResponse(responseWriter http.ResponseWriter, responses []*jsonrpcMessage, isBatch bool) {
+	responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
 	responseWriter.Header().Set("Content-Type", "application/json")
 	var data []byte
 	if isBatch {
