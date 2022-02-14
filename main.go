@@ -47,7 +47,7 @@ import (
 	"github.com/patrickmn/go-cache"
 )
 
-const defaultCacheExpiration = 1 * time.Second
+const defaultCacheExpiration = 2 * time.Second
 const defaultCacheExpirationLong = 60 * time.Second
 
 // Create a cache with a default expiration time of defaultCacheExpiration, and which
