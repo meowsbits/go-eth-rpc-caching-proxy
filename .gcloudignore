@@ -25,3 +25,5 @@
 *.out
 
 .*_test.go
+
+*.sh
