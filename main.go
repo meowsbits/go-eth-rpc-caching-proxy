@@ -34,12 +34,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrickmn/go-cache"
@@ -75,6 +77,7 @@ func init() {
 func main() {
 
 	http.HandleFunc("/", handler2)
+	http.HandleFunc("/stats", statsHandler)
 
 	// [START setting_port]
 	port := os.Getenv("PORT")
@@ -246,6 +249,11 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// Parse.
 	msgs, isBatch := parseMessage(bodyJSON)
 
+	if isBatch {
+		atomic.AddInt64(&stats.BatchReqCount, 1)
+	}
+	atomic.AddInt64(&stats.CallCount, int64(len(msgs)))
+
 	if !validateRequestWriting(responseWriter, request, msgs[0]) {
 		return
 	}
@@ -286,7 +294,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 
 		if ok {
 			// Cache hit.
-			// log.Printf("CACHE: hit / key=%v", key)
+			atomic.AddInt64(&stats.CacheHitsCount, 1)
 
 			cached := val.(*cacheObject)
 
@@ -296,7 +304,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 			continue
 		}
 		// Cache miss.
-		// log.Printf("CACHE: miss / key=%v", key)
+		atomic.AddInt64(&stats.CacheMissesCount, 1)
 	}
 
 	// Assemble a batch of calls needed to forward to the origin.
@@ -347,6 +355,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	}
 	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
 	_ = request.Body.Close()
+
+	atomic.AddInt64(&stats.BytesReadFromUpstream, int64(len(bodyJSON)))
+
 	// Parse.
 	newReplies, _ := parseMessage(bodyJSON) // I assume we get a batch response to our batch request.
 	nri := 0                                // New Reply Index. We expect the order shipped to be preserved in the order received.
@@ -423,5 +434,60 @@ func handlerWriteResponse(responseWriter http.ResponseWriter, responses []*jsonr
 		data, _ = json.Marshal(responses[0])
 	}
 	responseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	atomic.AddInt64(&stats.BytesSentToClients, int64(len(data)))
 	responseWriter.Write(data)
+}
+
+var stats = Stats{InstanceStarted: time.Now()}
+
+type Stats struct {
+	InstanceStarted       time.Time
+	BatchReqCount         int64
+	CallCount             int64 // JSONRPC calls
+	CacheHitsCount        int64
+	CacheMissesCount      int64
+	InvalidReqCount       int64
+	BytesReadFromUpstream int64
+	BytesSentToClients    int64
+}
+
+func (s *Stats) WriteToStream(w io.Writer) {
+	requestsCount := s.CacheHitsCount + s.CacheMissesCount
+	var cacheHitRatio float64
+	if requestsCount > 0 {
+		cacheHitRatio = float64(s.CacheHitsCount) / float64(requestsCount)
+	}
+	var cacheMissRatio float64
+	if requestsCount > 0 {
+		cacheMissRatio = float64(s.CacheMissesCount) / float64(requestsCount)
+	}
+	var batchRatio float64
+	if requestsCount > 0 {
+		batchRatio = float64(s.BatchReqCount) / float64(requestsCount)
+	}
+
+	fmt.Fprintf(w, "Uptime: %v", time.Since(stats.InstanceStarted))
+	fmt.Fprintf(w, "Requests count: %d\n", requestsCount)
+	fmt.Fprintf(w, "Requests/sec: %.3f\n", float64(requestsCount)/time.Since(stats.InstanceStarted).Seconds())
+	fmt.Fprintf(w, "RPC Calls count: %d\n", s.CallCount)
+	fmt.Fprintf(w, "RPC Batch count: %d\n", s.BatchReqCount)
+	fmt.Fprintf(w, "RPC Batch magnitude average: %.3f\n", float64(s.CallCount-requestsCount)/float64(s.BatchReqCount))
+	fmt.Fprintf(w, "RPC Batch ratio: %.3f\n", batchRatio)
+	fmt.Fprintf(w, "Cache hit ratio: %.3f\n", cacheHitRatio)
+	fmt.Fprintf(w, "Cache hits: %d\n", s.CacheHitsCount)
+	fmt.Fprintf(w, "Cache miss ratio: %.3f\n", cacheMissRatio)
+	fmt.Fprintf(w, "Cache misses: %d\n", s.CacheMissesCount)
+	fmt.Fprintf(w, "Read from upstream: %.3f MBytes\n", float64(s.BytesReadFromUpstream)/1000000)
+	fmt.Fprintf(w, "Sent to clients: %.3f MBytes\n", float64(s.BytesSentToClients)/1000000)
+	fmt.Fprintf(w, "Upstream traffic saved: %.3f MBytes\n", float64(s.BytesSentToClients-s.BytesReadFromUpstream)/1000000)
+	fmt.Fprintf(w, "Upstream requests saved: %d\n", s.CacheHitsCount)
+}
+
+func statsHandler(responseWriter http.ResponseWriter, request *http.Request) {
+	responseWriter.Header().Set("Content-Type", "text/plain")
+	responseWriter.WriteHeader(200)
+	var w bytes.Buffer
+	stats.WriteToStream(&w)
+	responseWriter.Write(w.Bytes())
+	return
 }
