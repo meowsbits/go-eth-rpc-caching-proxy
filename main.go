@@ -455,13 +455,15 @@ type Stats struct {
 }
 
 func (s *Stats) WriteToStream(w io.Writer) {
+	// cachableCount is the sum of cache misses and hits.
+	var cachableCount = stats.CacheHitsCount + stats.CacheMissesCount
 	var cacheHitRatio float64
 	if stats.ReqCount > 0 {
-		cacheHitRatio = float64(s.CacheHitsCount) / float64(stats.ReqCount)
+		cacheHitRatio = float64(s.CacheHitsCount) / float64(cachableCount)
 	}
 	var cacheMissRatio float64
 	if stats.ReqCount > 0 {
-		cacheMissRatio = float64(s.CacheMissesCount) / float64(stats.ReqCount)
+		cacheMissRatio = float64(s.CacheMissesCount) / float64(cachableCount)
 	}
 	var batchRatio float64
 	if stats.ReqCount > 0 {
