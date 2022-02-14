@@ -27,6 +27,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
 func randomID() json.RawMessage {
@@ -310,5 +312,15 @@ func BenchmarkHandler2(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rr = httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
+	}
+}
+
+func TestSetHeaderCacheValue(t *testing.T) {
+	h := http.Header{}
+	setHeaderCacheValue(h, 1*time.Second)
+	v := h.Get("Cache-Control")
+	if v != "public, s-maxage=1, max-age=1" {
+		t.Logf("%v", spew.Sdump(h))
+		t.Fatal("unexpected Cache-Control header")
 	}
 }

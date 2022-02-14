@@ -374,14 +374,17 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		}
 
 		ttl := getCacheDuration(msgs[i], newReply)
+		setHeaderCacheValue(res.Header, ttl) // For the cached response.
 
+		// We may have different cache parameters for
+		// responses to batched requests.
+		// We can only return one header with one Cache-Control value.
+		// So we choose the lowest cache value, if any,
+		// as the value for our actual response.
 		if ttl < lowTTL || lowTTL == 0 {
 			// Augment the response header with the cache values.
 			// The client should have a clue about how we're rolling.
-			responseWriter.Header().Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
-				ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
-			res.Header.Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
-				ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
+			setHeaderCacheValue(responseWriter.Header(), ttl) // For the client response.
 			lowTTL = ttl
 		}
 
@@ -401,6 +404,11 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	copyHeaders(responseWriter, res.Header)
 
 	handlerWriteResponse(responseWriter, replies, isBatch)
+}
+
+func setHeaderCacheValue(header http.Header, ttl time.Duration) {
+	header.Set("Cache-Control", fmt.Sprintf("public, s-maxage=%.0f, max-age=%.0f",
+		ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
 }
 
 func handlerWriteResponse(responseWriter http.ResponseWriter, responses []*jsonrpcMessage, isBatch bool) {
