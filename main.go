@@ -77,7 +77,7 @@ func init() {
 func main() {
 
 	http.HandleFunc("/", handler2)
-	http.HandleFunc("/stats", statsHandler)
+	http.HandleFunc("/about", aboutHandler)
 
 	// [START setting_port]
 	port := os.Getenv("PORT")
@@ -224,6 +224,8 @@ type cacheObject struct {
 
 // handler2 is version 2 of the handler.
 func handler2(responseWriter http.ResponseWriter, request *http.Request) {
+
+	atomic.AddInt64(&stats.ReqCount, 1)
 
 	if request.Body == nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
@@ -442,6 +444,7 @@ var stats = Stats{InstanceStarted: time.Now()}
 
 type Stats struct {
 	InstanceStarted       time.Time
+	ReqCount              int64
 	BatchReqCount         int64
 	CallCount             int64 // JSONRPC calls
 	CacheHitsCount        int64
@@ -452,26 +455,25 @@ type Stats struct {
 }
 
 func (s *Stats) WriteToStream(w io.Writer) {
-	requestsCount := s.CacheHitsCount + s.CacheMissesCount
 	var cacheHitRatio float64
-	if requestsCount > 0 {
-		cacheHitRatio = float64(s.CacheHitsCount) / float64(requestsCount)
+	if stats.ReqCount > 0 {
+		cacheHitRatio = float64(s.CacheHitsCount) / float64(stats.ReqCount)
 	}
 	var cacheMissRatio float64
-	if requestsCount > 0 {
-		cacheMissRatio = float64(s.CacheMissesCount) / float64(requestsCount)
+	if stats.ReqCount > 0 {
+		cacheMissRatio = float64(s.CacheMissesCount) / float64(stats.ReqCount)
 	}
 	var batchRatio float64
-	if requestsCount > 0 {
-		batchRatio = float64(s.BatchReqCount) / float64(requestsCount)
+	if stats.ReqCount > 0 {
+		batchRatio = float64(s.BatchReqCount) / float64(stats.ReqCount)
 	}
 
 	fmt.Fprintf(w, "Uptime: %v\n", time.Since(stats.InstanceStarted).Truncate(time.Second))
-	fmt.Fprintf(w, "Requests count: %d\n", requestsCount)
-	fmt.Fprintf(w, "Requests/sec: %.3f\n", float64(requestsCount)/time.Since(stats.InstanceStarted).Seconds())
+	fmt.Fprintf(w, "Requests count: %d\n", stats.ReqCount)
+	fmt.Fprintf(w, "Requests/sec: %.3f\n", float64(stats.ReqCount)/time.Since(stats.InstanceStarted).Seconds())
 	fmt.Fprintf(w, "RPC Calls count: %d\n", s.CallCount)
 	fmt.Fprintf(w, "RPC Batch count: %d\n", s.BatchReqCount)
-	fmt.Fprintf(w, "RPC Batch magnitude average: %.3f\n", float64(s.CallCount-requestsCount)/float64(s.BatchReqCount))
+	fmt.Fprintf(w, "RPC Batch magnitude average: %.3f\n", float64(s.CallCount-stats.ReqCount)/float64(s.BatchReqCount))
 	fmt.Fprintf(w, "RPC Batch ratio: %.3f\n", batchRatio)
 	fmt.Fprintf(w, "Cache hit ratio: %.3f\n", cacheHitRatio)
 	fmt.Fprintf(w, "Cache hits: %d\n", s.CacheHitsCount)
@@ -483,11 +485,15 @@ func (s *Stats) WriteToStream(w io.Writer) {
 	fmt.Fprintf(w, "Upstream requests saved: %d\n", s.CacheHitsCount)
 }
 
-func statsHandler(responseWriter http.ResponseWriter, request *http.Request) {
+func aboutHandler(responseWriter http.ResponseWriter, request *http.Request) {
 	responseWriter.Header().Set("Content-Type", "text/plain")
 	responseWriter.WriteHeader(200)
 	var w bytes.Buffer
+
+	fmt.Fprintf(&w, "Hello from a go-ethereum JSONRPC caching proxy.\n\n")
+
 	stats.WriteToStream(&w)
+
 	responseWriter.Write(w.Bytes())
 	return
 }
