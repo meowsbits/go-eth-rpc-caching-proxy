@@ -466,7 +466,7 @@ func (s *Stats) WriteToStream(w io.Writer) {
 		batchRatio = float64(s.BatchReqCount) / float64(requestsCount)
 	}
 
-	fmt.Fprintf(w, "Uptime: %v", time.Since(stats.InstanceStarted))
+	fmt.Fprintf(w, "Uptime: %v\n", time.Since(stats.InstanceStarted).Truncate(time.Second))
 	fmt.Fprintf(w, "Requests count: %d\n", requestsCount)
 	fmt.Fprintf(w, "Requests/sec: %.3f\n", float64(requestsCount)/time.Since(stats.InstanceStarted).Seconds())
 	fmt.Fprintf(w, "RPC Calls count: %d\n", s.CallCount)
