@@ -404,8 +404,10 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 }
 
 func handlerWriteResponse(responseWriter http.ResponseWriter, responses []*jsonrpcMessage, isBatch bool) {
+	// Set the headers that are set for every response.
 	responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
 	responseWriter.Header().Set("Content-Type", "application/json")
+
 	var data []byte
 	if isBatch {
 		data, _ = json.Marshal(responses)
