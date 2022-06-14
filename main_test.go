@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
+	json2 "helloworld/json"
 )
 
 func randomID() json.RawMessage {
@@ -40,6 +41,7 @@ func mustStartTestOrigin(t *testing.T) *exec.Cmd {
 	if err := gethCmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(1 * time.Second) // Wait for geth to start up.
 
 	r, err := url.Parse("http://localhost:8545")
 	if err != nil {
@@ -219,7 +221,7 @@ func TestApp(t *testing.T) {
 
 		c.reqBody = interpolateID(c.reqBody)
 
-		reqs, reqIsBatch := parseMessage(json.RawMessage(c.reqBody))
+		reqs, reqIsBatch := json2.ParseMessage(json.RawMessage(c.reqBody))
 
 		data := bytes.NewBuffer([]byte(c.reqBody))
 		req, err := http.NewRequest("POST", "/", data)
@@ -254,7 +256,7 @@ func TestApp(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-		replies, replyIsBatch := parseMessage(raw)
+		replies, replyIsBatch := json2.ParseMessage(raw)
 
 		if len(replies) == 0 {
 			t.Fatal("want > 1 replies, got", len(replies))

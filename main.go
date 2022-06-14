@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/patrickmn/go-cache"
+	json2 "helloworld/json"
 )
 
 const defaultCacheExpiration = 2 * time.Second
@@ -58,7 +59,7 @@ var c = cache.New(defaultCacheExpiration, 1*time.Second)
 var remote *url.URL
 
 type requestMsgValidation struct {
-	fn func(message *jsonrpcMessage) *jsonrpcMessage
+	fn func(message *json2.JsonrpcMessage) *json2.JsonrpcMessage
 }
 
 func mustInitOrigin() {
@@ -102,47 +103,47 @@ var (
 
 var requestValidations = []requestMsgValidation{
 	{
-		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
-			if !message.isCall() {
-				em := message.errorResponse(errMsgNotCall)
-				em.Error.Code = invalidRequestCode
+		fn: func(message *json2.JsonrpcMessage) *json2.JsonrpcMessage {
+			if !message.IsCall() {
+				em := message.ErrorResponse(errMsgNotCall)
+				em.Error.Code = json2.InvalidRequestCode
 				return em
 			}
 			return nil
 		},
 	},
 	{
-		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
-			if message.isNotification() {
-				em := message.errorResponse(errMsgIsNotification)
-				em.Error.Code = invalidRequestCode
+		fn: func(message *json2.JsonrpcMessage) *json2.JsonrpcMessage {
+			if message.IsNotification() {
+				em := message.ErrorResponse(errMsgIsNotification)
+				em.Error.Code = json2.InvalidRequestCode
 				return em
 			}
 			return nil
 		},
 	},
 	{
-		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
-			if message.isSubscribe() || message.isUnsubscribe() {
-				em := message.errorResponse(errMsgPubSub)
-				em.Error.Code = invalidRequestCode
+		fn: func(message *json2.JsonrpcMessage) *json2.JsonrpcMessage {
+			if message.IsSubscribe() || message.IsUnsubscribe() {
+				em := message.ErrorResponse(errMsgPubSub)
+				em.Error.Code = json2.InvalidRequestCode
 				return em
 			}
 			return nil
 		},
 	},
 	{
-		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
-			if message.isResponse() {
-				em := message.errorResponse(errMsgIsResponse)
-				em.Error.Code = invalidRequestCode
+		fn: func(message *json2.JsonrpcMessage) *json2.JsonrpcMessage {
+			if message.IsResponse() {
+				em := message.ErrorResponse(errMsgIsResponse)
+				em.Error.Code = json2.InvalidRequestCode
 				return em
 			}
 			return nil
 		},
 	},
 	{
-		fn: func(message *jsonrpcMessage) *jsonrpcMessage {
+		fn: func(message *json2.JsonrpcMessage) *json2.JsonrpcMessage {
 			for _, r := range []*regexp.Regexp{
 				regexp.MustCompile(`^admin`),
 				regexp.MustCompile(`^personal`),
@@ -150,8 +151,8 @@ var requestValidations = []requestMsgValidation{
 				regexp.MustCompile(`^miner`),
 			} {
 				if r.MatchString(message.Method) {
-					res := message.errorResponse(fmt.Errorf("the method %s does not exist/is not available", message.Method))
-					res.Error.Code = methodNotFoundCode
+					res := message.ErrorResponse(fmt.Errorf("the method %s does not exist/is not available", message.Method))
+					res.Error.Code = json2.MethodNotFoundCode
 					return res
 				}
 			}
@@ -160,7 +161,7 @@ var requestValidations = []requestMsgValidation{
 	},
 }
 
-func validationErrorRes(msg *jsonrpcMessage) *jsonrpcMessage {
+func validationErrorRes(msg *json2.JsonrpcMessage) *json2.JsonrpcMessage {
 	for _, v := range requestValidations {
 		if errMsg := v.fn(msg); errMsg != nil {
 			return errMsg
@@ -170,8 +171,8 @@ func validationErrorRes(msg *jsonrpcMessage) *jsonrpcMessage {
 }
 
 // getCacheDuration decides how long a response to a request should be cached for.
-func getCacheDuration(request, response *jsonrpcMessage) time.Duration {
-	if response.isError() {
+func getCacheDuration(request, response *json2.JsonrpcMessage) time.Duration {
+	if response.IsError() {
 		return defaultCacheExpirationLong
 	}
 	return defaultCacheExpiration
@@ -193,25 +194,25 @@ func copyHeaders(dst http.ResponseWriter, src http.Header) {
 // validateRequestWriting writes a jsonrpc message error to the responseWriter if the
 // request is determined to be invalid.
 // It reused the provided message's ID, if the message is not nil.
-func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Request, msg *jsonrpcMessage) (ok bool) {
+func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Request, msg *json2.JsonrpcMessage) (ok bool) {
 	if request.Method != "POST" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		em := errorMessage(fmt.Errorf("%w: you sent: %v", errRequestNotPOST, request.Method))
-		em.Error.Code = invalidRequestCode
+		em := json2.ErrorMessage(fmt.Errorf("%w: you sent: %v", errRequestNotPOST, request.Method))
+		em.Error.Code = json2.InvalidRequestCode
 		if msg != nil {
-			em = em.copyWithID(msg.ID)
+			em = em.CopyWithID(msg.ID)
 		}
-		responseWriter.Write(em.mustJSONBytes())
+		responseWriter.Write(em.MustJSONBytes())
 		return false
 	}
 	if contentType := request.Header.Get("Content-Type"); !strings.Contains(contentType, "application/json") && contentType != "" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		em := errorMessage(fmt.Errorf("%w: you sent: %v", errRequestNotContentTypeJSON, contentType))
-		em.Error.Code = invalidRequestCode
+		em := json2.ErrorMessage(fmt.Errorf("%w: you sent: %v", errRequestNotContentTypeJSON, contentType))
+		em.Error.Code = json2.InvalidRequestCode
 		if msg != nil {
-			em = em.copyWithID(msg.ID)
+			em = em.CopyWithID(msg.ID)
 		}
-		responseWriter.Write(em.mustJSONBytes())
+		responseWriter.Write(em.MustJSONBytes())
 		return false
 	}
 	return true
@@ -219,7 +220,7 @@ func validateRequestWriting(responseWriter http.ResponseWriter, request *http.Re
 
 type cacheObject struct {
 	header http.Header
-	body   *jsonrpcMessage
+	body   *json2.JsonrpcMessage
 }
 
 // handler2 is version 2 of the handler.
@@ -229,9 +230,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 
 	if request.Body == nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		em := errorMessage(errRequestMissingBody)
-		em.Error.Code = invalidRequestCode
-		responseWriter.Write(em.mustJSONBytes())
+		em := json2.ErrorMessage(errRequestMissingBody)
+		em.Error.Code = json2.InvalidRequestCode
+		responseWriter.Write(em.MustJSONBytes())
 		return
 	}
 
@@ -240,16 +241,16 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// I expect the Decoder to error if the body is not valid JSON.
 	if err := json.NewDecoder(request.Body).Decode(&bodyJSON); err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		em := errorMessage(err)
-		em.Error.Code = parseErrorCode
-		responseWriter.Write(em.mustJSONBytes())
+		em := json2.ErrorMessage(err)
+		em.Error.Code = json2.ParseErrorCode
+		responseWriter.Write(em.MustJSONBytes())
 		return
 	}
 	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
 	_ = request.Body.Close()
 
 	// Parse.
-	msgs, isBatch := parseMessage(bodyJSON)
+	msgs, isBatch := json2.ParseMessage(bodyJSON)
 
 	if isBatch {
 		atomic.AddInt64(&stats.BatchReqCount, 1)
@@ -265,7 +266,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// If we're reading a batch request, we'll respond in kind, with a batch.
 	// If it's just a single request (ie. of Object type),
 	// we'll return the first item in the slice as a single response.
-	replies := make([]*jsonrpcMessage, len(msgs))
+	replies := make([]*json2.JsonrpcMessage, len(msgs))
 
 	// Loop over the request's messages and see if we
 	// can fill any of them from the cache.
@@ -282,12 +283,12 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 			continue
 		}
 
-		key, err := msg.cacheKey()
+		key, err := msg.CacheKey()
 		if err != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
-			em := errorMessage(err)
-			em.Error.Code = internalErrorCode
-			responseWriter.Write(em.mustJSONBytes())
+			em := json2.ErrorMessage(err)
+			em.Error.Code = json2.InternalErrorCode
+			responseWriter.Write(em.MustJSONBytes())
 			return
 		}
 
@@ -302,7 +303,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 
 			copyHeaders(responseWriter, cached.header)
 
-			replies[i] = cached.body.copyWithID(msg.ID)
+			replies[i] = cached.body.CopyWithID(msg.ID)
 			continue
 		}
 		// Cache miss.
@@ -310,7 +311,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	}
 
 	// Assemble a batch of calls needed to forward to the origin.
-	misses := []*jsonrpcMessage{}
+	misses := []*json2.JsonrpcMessage{}
 	for i, r := range replies {
 		if msgs[i] == nil || r != nil {
 			continue
@@ -328,9 +329,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	marshaled, err := json.Marshal(misses)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
-		em := errorMessage(err)
-		em.Error.Code = internalErrorCode
-		responseWriter.Write(em.mustJSONBytes())
+		em := json2.ErrorMessage(err)
+		em.Error.Code = json2.InternalErrorCode
+		responseWriter.Write(em.MustJSONBytes())
 		return
 	}
 
@@ -339,9 +340,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	res, err := http.Post(remote.String(), "application/json", bytes.NewReader(marshaled))
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
-		em := errorMessage(err)
-		em.Error.Code = internalErrorCode
-		responseWriter.Write(em.mustJSONBytes())
+		em := json2.ErrorMessage(err)
+		em.Error.Code = json2.InternalErrorCode
+		responseWriter.Write(em.MustJSONBytes())
 		return
 	}
 
@@ -350,9 +351,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	// I expect the Decoder to error if the body is not valid JSON.
 	if err := json.NewDecoder(res.Body).Decode(&bodyJSON); err != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
-		em := errorMessage(err)
-		em.Error.Code = internalErrorCode
-		responseWriter.Write(em.mustJSONBytes())
+		em := json2.ErrorMessage(err)
+		em.Error.Code = json2.InternalErrorCode
+		responseWriter.Write(em.MustJSONBytes())
 		return
 	}
 	// I do not expect the Decoder to close after reading, but don't care if it actually has and errors.
@@ -361,9 +362,9 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	atomic.AddInt64(&stats.BytesReadFromUpstream, int64(len(bodyJSON)))
 
 	// Parse.
-	newReplies, _ := parseMessage(bodyJSON) // I assume we get a batch response to our batch request.
-	nri := 0                                // New Reply Index. We expect the order shipped to be preserved in the order received.
-	var lowTTL time.Duration                // Tracking the lowest TTL for the safest ultimate header Cache-Control value.
+	newReplies, _ := json2.ParseMessage(bodyJSON) // I assume we get a batch response to our batch request.
+	nri := 0                                      // New Reply Index. We expect the order shipped to be preserved in the order received.
+	var lowTTL time.Duration                      // Tracking the lowest TTL for the safest ultimate header Cache-Control value.
 	for i, r := range replies {
 		if msgs[i] == nil || r != nil {
 			continue
@@ -377,12 +378,12 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		replies[i] = newReply
 
 		// Handle the actual caching.
-		key, err := msgs[i].cacheKey()
+		key, err := msgs[i].CacheKey()
 		if err != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
-			em := errorMessage(err)
-			em.Error.Code = internalErrorCode
-			responseWriter.Write(em.mustJSONBytes())
+			em := json2.ErrorMessage(err)
+			em.Error.Code = json2.InternalErrorCode
+			responseWriter.Write(em.MustJSONBytes())
 			return
 		}
 
@@ -424,7 +425,7 @@ func setHeaderCacheValue(header http.Header, ttl time.Duration) {
 		ttl.Truncate(time.Second).Seconds(), ttl.Truncate(time.Second).Seconds()))
 }
 
-func handlerWriteResponse(responseWriter http.ResponseWriter, responses []*jsonrpcMessage, isBatch bool) {
+func handlerWriteResponse(responseWriter http.ResponseWriter, responses []*json2.JsonrpcMessage, isBatch bool) {
 	// Set the headers that are set for every response.
 	responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
 	responseWriter.Header().Set("Content-Type", "application/json")
