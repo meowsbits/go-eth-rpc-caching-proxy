@@ -1,9 +1,9 @@
-// package main implements a caching proxy for an ethereum json rpc origin.
+// package main implements a caching proxy for an ethereum json rpc active.
 //
 // SERVER
 //
 // Only HTTP transport is supported.
-// An ORIGIN_URL environment variable configures the origin of proxy,
+// An ORIGIN_URL environment variable configures the active of proxy,
 // and must be provided or the application will panic on start up.
 //
 // VALIDATION
@@ -31,6 +31,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +45,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/patrickmn/go-cache"
 	json2 "helloworld/json"
 )
@@ -55,30 +58,129 @@ const defaultCacheExpirationLong = 60 * time.Second
 // purges expired items every 1 second
 var c = cache.New(defaultCacheExpiration, 1*time.Second)
 
-// remote is the parsed form of the global app setting of the proxy origin.
-var remote *url.URL
-
 type requestMsgValidation struct {
 	fn func(message *json2.JsonrpcMessage) *json2.JsonrpcMessage
 }
 
-func mustInitOrigin() {
-	var err error
-	origin := os.Getenv("ORIGIN_URL")
-	remote, err = url.Parse(origin)
+func mustURL(envKey string) *url.URL {
+	origin := os.Getenv(envKey)
+	remote, err := url.Parse(origin)
 	if err != nil {
 		panic(err)
 	}
+	return remote
 }
 
-func init() {
-	mustInitOrigin()
+type proxyServer struct {
+	ctx       context.Context
+	ethclient *ethclient.Client
+	endpoints endpoints
+}
+
+func (ps *proxyServer) fetchHeads() {
+	for _, e := range ps.endpoints {
+		e.head, e.err = ps.ethclient.HeaderByNumber(ps.ctx, nil)
+	}
+}
+
+type endpoint struct {
+	url        *url.URL
+	head       *types.Header
+	isFallback bool
+	err        error
+}
+
+func (e *endpoint) String() string {
+	return fmt.Sprintf("url=%s head.n=%v head.h=%s fallback=%v err=%v",
+		e.url.String(),
+		e.head.Number.Uint64(), e.head.Hash().Hex(),
+		e.isFallback,
+		e.err)
+}
+
+type endpoints []*endpoint
+
+// consistent tells us if all the endpoints have the same header associated with them.
+func (eps endpoints) consistent() bool {
+	var referenceHead *types.Header
+	for _, e := range eps {
+		if e.err != nil {
+			return false
+		}
+		if referenceHead == nil {
+			referenceHead = e.head
+			continue
+		}
+		if e.head.Hash() != referenceHead.Hash() {
+			return false
+		}
+	}
+	return true
+}
+
+// fallback returns the first 'isFallback' endpoint it finds.
+func (eps endpoints) fallback() *endpoint {
+	for _, e := range eps {
+		if e.isFallback {
+			return e
+		}
+	}
+	return nil
+}
+
+func (eps endpoints) active() *endpoint {
+	if !eps.consistent() {
+		return eps.fallback()
+	}
+	for _, e := range eps {
+		if e.err == nil && !e.isFallback {
+			return e
+		}
+	}
+	return eps.fallback()
 }
 
 func main() {
+	ps := &proxyServer{
+		ctx: context.Background(),
+		endpoints: endpoints{
+			{
+				url: mustURL("ORIGIN_URL"),
+			},
+			{
+				url:        mustURL("FALLBACK_URL"),
+				isFallback: true,
+			},
+		},
+	}
+	var err error
+	ps.ethclient, err = ethclient.Dial(ps.endpoints.fallback().url.String())
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	http.HandleFunc("/", handler2)
-	http.HandleFunc("/about", aboutHandler)
+	ps.fetchHeads()
+
+	for _, e := range ps.endpoints {
+		log.Printf("- endpoint: %s", e.String())
+	}
+
+	// Run a goroutine that will keep the endpoint statuses current.
+	// It queries the current header at each endpoint and assigns that value to memory.
+	go func() {
+		t := time.NewTicker(time.Second * 5)
+		for range t.C {
+			ps.fetchHeads()
+			headNs := []uint64{}
+			for _, e := range ps.endpoints {
+				headNs = append(headNs, e.head.Number.Uint64())
+			}
+			log.Printf("endpoint heads consistent?=%v heads.numbers=%v\n", ps.endpoints.consistent(), headNs)
+		}
+	}()
+
+	http.HandleFunc("/", ps.handler2)
+	http.HandleFunc("/status", ps.statusHandler)
 
 	// [START setting_port]
 	port := os.Getenv("PORT")
@@ -224,7 +326,7 @@ type cacheObject struct {
 }
 
 // handler2 is version 2 of the handler.
-func handler2(responseWriter http.ResponseWriter, request *http.Request) {
+func (ps *proxyServer) handler2(responseWriter http.ResponseWriter, request *http.Request) {
 
 	atomic.AddInt64(&stats.ReqCount, 1)
 
@@ -310,7 +412,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		atomic.AddInt64(&stats.CacheMissesCount, 1)
 	}
 
-	// Assemble a batch of calls needed to forward to the origin.
+	// Assemble a batch of calls needed to forward to the active.
 	misses := []*json2.JsonrpcMessage{}
 	for i, r := range replies {
 		if msgs[i] == nil || r != nil {
@@ -325,7 +427,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	// JSON encode the new sub-batch for shipping to the origin.
+	// JSON encode the new sub-batch for shipping to the active.
 	marshaled, err := json.Marshal(misses)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
@@ -336,8 +438,8 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	}
 
 	// Send batch request (which includes only the calls to which we don't have cached responses)
-	// to origin.
-	res, err := http.Post(remote.String(), "application/json", bytes.NewReader(marshaled))
+	// to active.
+	res, err := http.Post(ps.endpoints.active().url.String(), "application/json", bytes.NewReader(marshaled))
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
 		em := json2.ErrorMessage(err)
@@ -412,7 +514,7 @@ func handler2(responseWriter http.ResponseWriter, request *http.Request) {
 	}
 
 	// Clone any and all headers from
-	// the batch origin response.
+	// the batch active response.
 	// Note that this could overwrite the Cache-Control, or Content-Type headers
 	// that this application will set.
 	copyHeaders(responseWriter, res.Header)
@@ -488,7 +590,7 @@ func (s *Stats) WriteToStream(w io.Writer) {
 	fmt.Fprintf(w, "Upstream requests saved: %d\n", s.CacheHitsCount)
 }
 
-func aboutHandler(responseWriter http.ResponseWriter, request *http.Request) {
+func (ps *proxyServer) statusHandler(responseWriter http.ResponseWriter, request *http.Request) {
 	responseWriter.Header().Set("Content-Type", "text/plain")
 	responseWriter.WriteHeader(200)
 	var w bytes.Buffer
